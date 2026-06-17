@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>FogonDesk.Application</RootNamespace>
+    <AssemblyName>FogonDesk.Application</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FogonDesk.Domain\FogonDesk.Domain.csproj" />
+  </ItemGroup>
+</Project>

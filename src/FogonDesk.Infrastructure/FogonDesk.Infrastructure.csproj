@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>FogonDesk.Infrastructure</RootNamespace>
+    <AssemblyName>FogonDesk.Infrastructure</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Data.SQLite.Core" Version="1.0.118" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FogonDesk.Domain\FogonDesk.Domain.csproj" />
+    <ProjectReference Include="..\FogonDesk.Application\FogonDesk.Application.csproj" />
+    <ProjectReference Include="..\FogonDesk.Configuration\FogonDesk.Configuration.csproj" />
+  </ItemGroup>
+</Project>

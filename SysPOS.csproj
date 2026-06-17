@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>SysPOS</AssemblyName>
+    <RootNamespace>SysPOS</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="launcher\Program.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="src\FogonDesk.Desktop\FogonDesk.Desktop.csproj" />
+  </ItemGroup>
+</Project>

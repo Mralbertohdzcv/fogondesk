@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+  <PropertyGroup>
+    <RootNamespace>FogonDesk.Desktop</RootNamespace>
+    <AssemblyName>FogonDesk.Desktop</AssemblyName>
+    <OutputType>WinExe</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FogonDesk.Domain\FogonDesk.Domain.csproj" />
+    <ProjectReference Include="..\FogonDesk.Application\FogonDesk.Application.csproj" />
+    <ProjectReference Include="..\FogonDesk.Configuration\FogonDesk.Configuration.csproj" />
+    <ProjectReference Include="..\FogonDesk.Infrastructure\FogonDesk.Infrastructure.csproj" />
+    <ProjectReference Include="..\FogonDesk.Printing\FogonDesk.Printing.csproj" />
+  </ItemGroup>
+</Project>

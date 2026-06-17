@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>FogonDesk.Printing</RootNamespace>
+    <AssemblyName>FogonDesk.Printing</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FogonDesk.Application\FogonDesk.Application.csproj" />
+  </ItemGroup>
+</Project>

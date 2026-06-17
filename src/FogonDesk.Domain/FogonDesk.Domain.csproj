@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>FogonDesk.Domain</RootNamespace>
+    <AssemblyName>FogonDesk.Domain</AssemblyName>
+  </PropertyGroup>
+</Project>

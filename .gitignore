@@ -1,0 +1,13 @@
+bin/
+obj/
+.vs/
+packages/
+*.user
+*.suo
+*.cache
+*.db-shm
+*.db-wal
+*.nupkg
+*.snupkg
+TestResults/
+artifacts/
