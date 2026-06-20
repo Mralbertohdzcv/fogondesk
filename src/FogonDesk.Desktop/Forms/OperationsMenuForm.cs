@@ -2199,71 +2199,185 @@ ORDER BY id ASC;";
             {
                 dialog.Text = "Cambio en efectivo";
                 dialog.StartPosition = FormStartPosition.CenterParent;
-                dialog.ClientSize = new Size(430, 240);
+                dialog.ClientSize = new Size(520, 680);
                 dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
                 dialog.MaximizeBox = false;
                 dialog.MinimizeBox = false;
+                dialog.BackColor = Color.FromArgb(236, 241, 245);
 
-                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Padding = new Padding(12) };
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
+                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7, Padding = new Padding(20) };
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
                 layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 64F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 70F));
                 layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F));
 
-                var paidInput = new NumericUpDown
+                var paidValuePanel = new Panel
                 {
                     Dock = DockStyle.Fill,
-                    DecimalPlaces = 2,
-                    Maximum = 1000000m,
-                    Minimum = 0m,
-                    ThousandsSeparator = true,
-                    Value = total,
-                    TextAlign = HorizontalAlignment.Right,
-                    Font = new Font("Segoe UI Semibold", 13F, FontStyle.Bold)
+                    BackColor = Color.White,
+                    BorderStyle = BorderStyle.FixedSingle,
+                    Margin = new Padding(0, 4, 0, 4)
                 };
+                var paidValueLabel = new Label
+                {
+                    Dock = DockStyle.Fill,
+                    Font = new Font("Segoe UI Semibold", 24F, FontStyle.Bold),
+                    ForeColor = Color.FromArgb(15, 23, 42),
+                    TextAlign = ContentAlignment.MiddleRight,
+                    Padding = new Padding(0, 0, 12, 0)
+                };
+                paidValuePanel.Controls.Add(paidValueLabel);
 
+                var changePanel = new Panel { Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 4) };
                 var changeLabel = new Label
                 {
                     Dock = DockStyle.Fill,
-                    Font = new Font("Segoe UI Semibold", 13F, FontStyle.Bold),
-                    TextAlign = ContentAlignment.MiddleLeft
+                    Font = new Font("Segoe UI Semibold", 16F, FontStyle.Bold),
+                    TextAlign = ContentAlignment.MiddleCenter
                 };
+                changePanel.Controls.Add(changeLabel);
 
-                Action refreshChange = delegate
+                var typedWhole = 0L;
+                var hasTyped = false;
+
+                Action refresh = delegate
                 {
-                    var change = paidInput.Value - total;
+                    paidValueLabel.Text = hasTyped ? "$" + typedWhole.ToString("N0") : string.Empty;
+
+                    if (!hasTyped)
+                    {
+                        changeLabel.Text = "Ingresa el monto recibido";
+                        changeLabel.ForeColor = Color.FromArgb(71, 85, 105);
+                        changePanel.BackColor = Color.FromArgb(241, 245, 249);
+                        return;
+                    }
+
+                    var change = typedWhole - total;
                     if (change < 0m)
                     {
                         changeLabel.Text = "Faltante: $" + Math.Abs(change).ToString("N2");
-                        changeLabel.ForeColor = Color.FromArgb(185, 28, 28);
+                        changeLabel.ForeColor = Color.FromArgb(153, 27, 27);
+                        changePanel.BackColor = Color.FromArgb(254, 226, 226);
                         return;
                     }
 
                     changeLabel.Text = "Cambio a entregar: $" + change.ToString("N2");
-                    changeLabel.ForeColor = Color.FromArgb(21, 128, 61);
+                    changeLabel.ForeColor = Color.FromArgb(22, 101, 52);
+                    changePanel.BackColor = Color.FromArgb(220, 252, 231);
                 };
-                paidInput.ValueChanged += delegate { refreshChange(); };
+
+                Action<int> appendDigit = digit =>
+                {
+                    hasTyped = true;
+                    const long maxWhole = 1000000L;
+                    var next = (typedWhole * 10L) + digit;
+                    typedWhole = next > maxWhole ? maxWhole : next;
+                    refresh();
+                };
+                Action backspace = delegate
+                {
+                    if (!hasTyped)
+                    {
+                        return;
+                    }
+
+                    typedWhole /= 10L;
+                    refresh();
+                };
+                Action clear = delegate
+                {
+                    typedWhole = 0L;
+                    hasTyped = false;
+                    refresh();
+                };
+
+                var keypadPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 4, Margin = new Padding(0, 6, 0, 6) };
+                for (var column = 0; column < 3; column++)
+                {
+                    keypadPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.34F));
+                }
+
+                for (var row = 0; row < 4; row++)
+                {
+                    keypadPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 25F));
+                }
+
+                var darkText = Color.FromArgb(33, 37, 41);
+                var keypadFont = new Font("Segoe UI Semibold", 22F, FontStyle.Bold);
+
+                Func<string, Color, Color, Action, Button> makeKey = (text, backColor, foreColor, onClick) =>
+                {
+                    var key = new Button
+                    {
+                        Text = text,
+                        Dock = DockStyle.Fill,
+                        Margin = new Padding(6),
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = backColor,
+                        ForeColor = foreColor,
+                        Font = keypadFont
+                    };
+                    key.FlatAppearance.BorderColor = Color.FromArgb(208, 215, 222);
+                    key.Click += delegate { onClick(); };
+                    return key;
+                };
+
+                keypadPanel.Controls.Add(makeKey("7", Color.White, darkText, () => appendDigit(7)), 0, 0);
+                keypadPanel.Controls.Add(makeKey("8", Color.White, darkText, () => appendDigit(8)), 1, 0);
+                keypadPanel.Controls.Add(makeKey("9", Color.White, darkText, () => appendDigit(9)), 2, 0);
+                keypadPanel.Controls.Add(makeKey("4", Color.White, darkText, () => appendDigit(4)), 0, 1);
+                keypadPanel.Controls.Add(makeKey("5", Color.White, darkText, () => appendDigit(5)), 1, 1);
+                keypadPanel.Controls.Add(makeKey("6", Color.White, darkText, () => appendDigit(6)), 2, 1);
+                keypadPanel.Controls.Add(makeKey("1", Color.White, darkText, () => appendDigit(1)), 0, 2);
+                keypadPanel.Controls.Add(makeKey("2", Color.White, darkText, () => appendDigit(2)), 1, 2);
+                keypadPanel.Controls.Add(makeKey("3", Color.White, darkText, () => appendDigit(3)), 2, 2);
+                keypadPanel.Controls.Add(makeKey("C", Color.FromArgb(185, 28, 28), Color.White, clear), 0, 3);
+                keypadPanel.Controls.Add(makeKey("0", Color.White, darkText, () => appendDigit(0)), 1, 3);
+                keypadPanel.Controls.Add(makeKey("⌫", Color.FromArgb(69, 123, 157), Color.White, backspace), 2, 3);
 
                 var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
-                var closeButton = new Button { Text = "Cerrar", Width = 110, Height = 30, DialogResult = DialogResult.OK };
-                var skipButton = new Button { Text = "Omitir", Width = 110, Height = 30, DialogResult = DialogResult.Cancel };
+                var closeButton = new Button
+                {
+                    Text = "Cerrar",
+                    Width = 130,
+                    Height = 38,
+                    DialogResult = DialogResult.OK,
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.FromArgb(27, 67, 50),
+                    ForeColor = Color.White,
+                    Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold)
+                };
+                closeButton.FlatAppearance.BorderSize = 0;
+                var skipButton = new Button
+                {
+                    Text = "Omitir",
+                    Width = 130,
+                    Height = 38,
+                    DialogResult = DialogResult.Cancel,
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.White,
+                    ForeColor = darkText,
+                    Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold)
+                };
+                skipButton.FlatAppearance.BorderColor = Color.FromArgb(208, 215, 222);
                 buttons.Controls.Add(closeButton);
                 buttons.Controls.Add(skipButton);
 
-                layout.Controls.Add(new Label { Text = "Venta cobrada en efectivo", Dock = DockStyle.Fill, Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
-                layout.Controls.Add(new Label { Text = "Total: $" + total.ToString("N2"), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
-                layout.Controls.Add(new Label { Text = "Pago con:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 2);
-                layout.Controls.Add(paidInput, 0, 3);
-                layout.Controls.Add(changeLabel, 0, 4);
-                layout.Controls.Add(buttons, 0, 5);
+                layout.Controls.Add(new Label { Text = "Venta cobrada en efectivo", Dock = DockStyle.Fill, Font = new Font("Segoe UI Semibold", 12F, FontStyle.Bold), ForeColor = darkText, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+                layout.Controls.Add(new Label { Text = "Total: $" + total.ToString("N2"), Dock = DockStyle.Fill, Font = new Font("Segoe UI Semibold", 14F, FontStyle.Bold), ForeColor = darkText, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
+                layout.Controls.Add(new Label { Text = "Pago con:", Dock = DockStyle.Fill, Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold), ForeColor = darkText, TextAlign = ContentAlignment.MiddleLeft }, 0, 2);
+                layout.Controls.Add(paidValuePanel, 0, 3);
+                layout.Controls.Add(changePanel, 0, 4);
+                layout.Controls.Add(keypadPanel, 0, 5);
+                layout.Controls.Add(buttons, 0, 6);
 
                 dialog.Controls.Add(layout);
                 dialog.AcceptButton = closeButton;
                 dialog.CancelButton = skipButton;
-                TouchInputSupport.EnableFor(dialog);
-                refreshChange();
+                refresh();
                 dialog.ShowDialog(this);
             }
         }

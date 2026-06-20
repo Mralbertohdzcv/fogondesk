@@ -119,25 +119,26 @@ namespace FogonDesk.Desktop.TouchInput
             }
 
             var workingArea = Screen.FromControl(owner).WorkingArea;
-            var left = owner.Left + ((owner.Width - Width) / 2);
-            var top = owner.Bottom - Height - 12;
-
-            if (top + Height > workingArea.Bottom)
-            {
-                top = workingArea.Bottom - Height - 12;
-            }
+            var top = owner.Top + ((owner.Height - Height) / 2);
 
             if (top < workingArea.Top)
             {
                 top = workingArea.Top + 12;
             }
 
-            if (left < workingArea.Left)
+            if (top + Height > workingArea.Bottom)
             {
-                left = workingArea.Left + 12;
+                top = workingArea.Bottom - Height - 12;
             }
 
+            var left = owner.Right + 12;
+
             if (left + Width > workingArea.Right)
+            {
+                left = owner.Left - Width - 12;
+            }
+
+            if (left < workingArea.Left)
             {
                 left = workingArea.Right - Width - 12;
             }
