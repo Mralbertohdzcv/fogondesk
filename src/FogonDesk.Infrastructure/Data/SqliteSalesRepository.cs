@@ -173,6 +173,90 @@ VALUES ('sale.cancelled', 'sales', @entity_id, @user_name, @details, @created_ut
             }
         }
 
+        public void SaveReceiptText(int saleId, string receiptText)
+        {
+            using (var connection = this.connectionFactory.CreateOpenConnection())
+            using (var transaction = connection.BeginTransaction())
+            {
+                ExecuteNonQuery(
+                    connection,
+                    transaction,
+                    "UPDATE sales SET receipt_text = @receipt_text WHERE id = @id;",
+                    new SQLiteParameter("@receipt_text", receiptText ?? string.Empty),
+                    new SQLiteParameter("@id", saleId));
+                transaction.Commit();
+            }
+        }
+
+        public void UpdatePaymentMethod(int saleId, PaymentMethod paymentMethod)
+        {
+            using (var connection = this.connectionFactory.CreateOpenConnection())
+            using (var transaction = connection.BeginTransaction())
+            {
+                try
+                {
+                    decimal total;
+                    string previousSummary;
+                    int? cashShiftId;
+
+                    using (var command = connection.CreateCommand())
+                    {
+                        command.Transaction = transaction;
+                        command.CommandText = "SELECT total, payment_summary, cash_shift_id FROM sales WHERE id = @id LIMIT 1;";
+                        command.Parameters.AddWithValue("@id", saleId);
+                        using (var reader = command.ExecuteReader())
+                        {
+                            if (!reader.Read())
+                            {
+                                throw new InvalidOperationException("El ticket indicado no existe.");
+                            }
+
+                            total = Convert.ToDecimal(reader.GetValue(0));
+                            previousSummary = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                            cashShiftId = reader.IsDBNull(2) ? (int?)null : Convert.ToInt32(reader.GetValue(2));
+                        }
+                    }
+
+                    if (cashShiftId.HasValue)
+                    {
+                        var wasCash = string.Equals(previousSummary, PaymentMethod.Efectivo.ToString(), StringComparison.OrdinalIgnoreCase);
+                        var isCash = paymentMethod == PaymentMethod.Efectivo;
+                        if (wasCash != isCash)
+                        {
+                            var cashDelta = isCash ? total : -total;
+                            ExecuteNonQuery(
+                                connection,
+                                transaction,
+                                "UPDATE cash_shifts SET expected_cash = expected_cash + @delta WHERE id = @id;",
+                                new SQLiteParameter("@delta", cashDelta),
+                                new SQLiteParameter("@id", cashShiftId.Value));
+                        }
+                    }
+
+                    ExecuteNonQuery(
+                        connection,
+                        transaction,
+                        "UPDATE sales SET payment_summary = @payment_summary WHERE id = @id;",
+                        new SQLiteParameter("@payment_summary", paymentMethod.ToString()),
+                        new SQLiteParameter("@id", saleId));
+
+                    ExecuteNonQuery(
+                        connection,
+                        transaction,
+                        "UPDATE payments SET payment_method = @payment_method WHERE sale_id = @sale_id;",
+                        new SQLiteParameter("@payment_method", (int)paymentMethod),
+                        new SQLiteParameter("@sale_id", saleId));
+
+                    transaction.Commit();
+                }
+                catch
+                {
+                    transaction.Rollback();
+                    throw;
+                }
+            }
+        }
+
         private static long InsertSale(SQLiteConnection connection, SQLiteTransaction transaction, string folio, CreateSaleRequest request, DateTime soldUtc, decimal subtotal, decimal estimatedCostTotal, decimal estimatedProfitTotal, decimal total)
         {
             ExecuteNonQuery(

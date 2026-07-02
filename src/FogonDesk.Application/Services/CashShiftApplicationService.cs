@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using FogonDesk.Application.Common;
 using FogonDesk.Application.Contracts;
 using FogonDesk.Application.Models;
@@ -97,14 +98,25 @@ namespace FogonDesk.Application.Services
                     if (string.IsNullOrWhiteSpace(telegramMessage))
                     {
                         telegramMessage =
-                            "[CORTE] " + shift.Folio + " cerrado por " + (request.UserName ?? string.Empty)
-                            + ". Ventas: $" + shift.SalesTotal.ToString("N2")
-                            + " | Esperado: $" + shift.ExpectedCash.ToString("N2")
-                            + " | Real: $" + (shift.ActualCash ?? 0m).ToString("N2") + ".";
+                            "📊 Corte cerrado: " + shift.Folio + "\n"
+                            + "👤 Cerrado por: " + (request.UserName ?? string.Empty) + "\n\n"
+                            + "💰 Ventas: $" + shift.SalesTotal.ToString("N2") + "\n"
+                            + "🧾 Esperado: $" + shift.ExpectedCash.ToString("N2") + "\n"
+                            + "✅ Contado: $" + (shift.ActualCash ?? 0m).ToString("N2");
                     }
 
-                    this.telegramIntegrationService.SendAdminBroadcast(
-                        telegramMessage);
+                    var telegramService = this.telegramIntegrationService;
+                    Task.Run(() =>
+                    {
+                        try
+                        {
+                            telegramService.SendAdminBroadcast(telegramMessage);
+                        }
+                        catch (Exception exception)
+                        {
+                            this.logger.Error("No fue posible enviar el resumen de corte a Telegram.", exception);
+                        }
+                    });
                 }
 
                 return OperationResult<CashShiftSummaryView>.Ok(shift, "Caja cerrada correctamente.");
@@ -119,6 +131,17 @@ namespace FogonDesk.Application.Services
         public IList<CashShiftSummaryView> GetRecentShifts(string stationCode, int maxCount)
         {
             return this.repository.LoadRecentShifts(stationCode, maxCount <= 0 ? 10 : maxCount);
+        }
+
+        public int CountParaLlevarSalesInActiveShift(string stationCode)
+        {
+            var shift = this.repository.FindActiveShift(stationCode ?? string.Empty);
+            if (shift == null)
+            {
+                return 0;
+            }
+
+            return this.repository.CountConfirmedSalesByOrderKind(shift.ShiftId, (int)FogonDesk.Domain.Common.OrderKind.ParaLlevar);
         }
     }
 }

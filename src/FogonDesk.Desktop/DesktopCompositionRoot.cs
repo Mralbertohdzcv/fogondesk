@@ -28,6 +28,8 @@ namespace FogonDesk.Desktop
             this.SalesRepository = new SqliteSalesRepository(this.ConnectionFactory);
             this.TicketPrintSettingsRepository = new SqliteTicketPrintSettingsRepository(this.ConnectionFactory);
             this.OperationSettingsRepository = new SqliteOperationSettingsRepository(this.ConnectionFactory);
+            this.CounterRepository = new SqliteCounterRepository(this.ConnectionFactory);
+            this.DataResetService = new SqliteDataResetService(this.ConnectionFactory);
             this.TicketPrinter = new WindowsTicketPrinter(this.Logger);
             this.TelegramIntegrationService = new TelegramIntegrationService(this.ConnectionFactory, this.Clock, this.Logger);
             this.BackupService = new SqliteBackupService(this.ConnectionFactory, this.Paths, this.Clock, this.Logger);
@@ -55,6 +57,8 @@ namespace FogonDesk.Desktop
         public ISalesRepository SalesRepository { get; private set; }
         public ITicketPrintSettingsRepository TicketPrintSettingsRepository { get; private set; }
         public IOperationSettingsRepository OperationSettingsRepository { get; private set; }
+        public ICounterRepository CounterRepository { get; private set; }
+        public IDataResetService DataResetService { get; private set; }
         public ITicketPrinter TicketPrinter { get; private set; }
         public ITelegramIntegrationService TelegramIntegrationService { get; private set; }
         public IBackupService BackupService { get; private set; }

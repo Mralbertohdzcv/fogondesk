@@ -63,7 +63,7 @@ namespace FogonDesk.Desktop
                     }
 
                     this.root.Logger.Info("Acceso correcto. Mostrando OperationsMenuForm para " + loginForm.AuthenticatedUser.Username + ".");
-                    using (var mainMenu = new OperationsMenuForm(startup.Data, loginForm.AuthenticatedUser, this.root.BackupService, this.root.TicketPrinter, this.root.CatalogApplicationService, this.root.UserAdministrationService, this.root.CashShiftApplicationService, this.root.SalesApplicationService, this.root.TicketPrintSettingsApplicationService, this.root.TelegramIntegrationService, this.root.OperationSettingsApplicationService))
+                    using (var mainMenu = new OperationsMenuForm(startup.Data, loginForm.AuthenticatedUser, this.root.BackupService, this.root.TicketPrinter, this.root.CatalogApplicationService, this.root.UserAdministrationService, this.root.CashShiftApplicationService, this.root.SalesApplicationService, this.root.TicketPrintSettingsApplicationService, this.root.TelegramIntegrationService, this.root.OperationSettingsApplicationService, this.root.CounterRepository, this.root.DataResetService))
                     {
                         mainMenu.ShowDialog();
                         keepRunning = mainMenu.LogoutRequested;

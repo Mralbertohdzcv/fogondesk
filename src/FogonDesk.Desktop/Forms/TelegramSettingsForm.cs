@@ -183,17 +183,28 @@ namespace FogonDesk.Desktop
 
         private void AutoSyncTick(object sender, EventArgs eventArgs)
         {
-            var result = this.telegramIntegrationService.SyncLinkRequests();
-            if (!result.Success)
+            var svc = this.telegramIntegrationService;
+            System.Threading.Tasks.Task.Run(() =>
             {
-                return;
-            }
-
-            if (result.Data > 0)
-            {
-                ReloadSettings();
-                this.statusLabel.Text = "Se vincularon " + result.Data.ToString() + " chat(s) automaticamente.";
-            }
+                try
+                {
+                    var result = svc.SyncLinkRequests();
+                    if (result.Success && result.Data > 0)
+                    {
+                        this.BeginInvoke(new Action(() =>
+                        {
+                            if (!this.IsDisposed)
+                            {
+                                ReloadSettings();
+                                this.statusLabel.Text = "Se vincularon " + result.Data.ToString() + " chat(s) automaticamente.";
+                            }
+                        }));
+                    }
+                }
+                catch
+                {
+                }
+            });
         }
 
         private static Button CreateActionButton(string text, Color backColor, EventHandler handler)

@@ -77,6 +77,7 @@ namespace FogonDesk.Desktop
                 UseSystemPasswordChar = true,
                 Margin = new Padding(0, 6, 0, 0)
             };
+
             this.errorLabel = new Label
             {
                 Dock = DockStyle.Fill,
@@ -131,6 +132,12 @@ namespace FogonDesk.Desktop
             Controls.Add(root);
             AcceptButton = loginButton;
             CancelButton = cancelButton;
+
+            Shown += delegate
+            {
+                var workingArea = Screen.FromControl(this).WorkingArea;
+                Location = new Point(workingArea.Left + ((workingArea.Width - Width) / 2), workingArea.Top + 10);
+            };
         }
 
         public AuthenticatedUserView AuthenticatedUser { get; private set; }

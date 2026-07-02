@@ -160,6 +160,18 @@ LIMIT @limit;";
             return result;
         }
 
+        public int CountConfirmedSalesByOrderKind(int shiftId, int orderKind)
+        {
+            using (var connection = this.connectionFactory.CreateOpenConnection())
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "SELECT COUNT(*) FROM sales WHERE cash_shift_id = @shiftId AND order_kind = @orderKind AND status = 1;";
+                command.Parameters.AddWithValue("@shiftId", shiftId);
+                command.Parameters.AddWithValue("@orderKind", orderKind);
+                return System.Convert.ToInt32(command.ExecuteScalar());
+            }
+        }
+
         private static CashShiftSummaryView ReadSummary(SQLiteDataReader reader)
         {
             return new CashShiftSummaryView

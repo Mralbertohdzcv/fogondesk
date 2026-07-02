@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using FogonDesk.Application.Common;
 using FogonDesk.Application.Models;
+using FogonDesk.Domain.Common;
 
 namespace FogonDesk.Application.Contracts
 {
@@ -100,6 +101,8 @@ namespace FogonDesk.Application.Contracts
     {
         OperationResult<CreateSaleResult> RegisterSale(CreateSaleRequest request);
         OperationResult CancelSale(CancelSaleRequest request);
+        OperationResult SaveReceiptText(int saleId, string receiptText);
+        OperationResult UpdatePaymentMethod(int saleId, PaymentMethod paymentMethod);
     }
 
     public interface ITicketPrintSettingsApplicationService
@@ -137,6 +140,12 @@ namespace FogonDesk.Application.Contracts
         OperationResult<CashShiftSummaryView> OpenShift(OpenCashShiftRequest request);
         OperationResult<CashShiftSummaryView> CloseShift(CloseCashShiftRequest request);
         IList<CashShiftSummaryView> GetRecentShifts(string stationCode, int maxCount);
+        int CountParaLlevarSalesInActiveShift(string stationCode);
+    }
+
+    public interface IDataResetService
+    {
+        OperationResult ResetSalesData();
     }
 
     public interface ICancellationApplicationService
@@ -167,12 +176,15 @@ namespace FogonDesk.Application.Contracts
         CashShiftSummaryView OpenShift(OpenCashShiftRequest request, DateTime openedUtc);
         CashShiftSummaryView CloseShift(CloseCashShiftRequest request, DateTime closedUtc);
         IList<CashShiftSummaryView> LoadRecentShifts(string stationCode, int maxCount);
+        int CountConfirmedSalesByOrderKind(int shiftId, int orderKind);
     }
 
     public interface ISalesRepository
     {
         CreateSaleResult PersistSale(CreateSaleRequest request, DateTime soldUtc);
         void CancelSale(CancelSaleRequest request, DateTime cancelledUtc);
+        void SaveReceiptText(int saleId, string receiptText);
+        void UpdatePaymentMethod(int saleId, PaymentMethod paymentMethod);
     }
 
     public interface ITicketPrintSettingsRepository
@@ -185,5 +197,12 @@ namespace FogonDesk.Application.Contracts
     {
         OperationSettingsView LoadSettings();
         void SaveSettings(SaveOperationSettingsRequest request, DateTime updatedUtc);
+    }
+
+    public interface ICounterRepository
+    {
+        int GetNextValue(string counterName);
+        int PeekCurrentValue(string counterName);
+        void ResetValue(string counterName, int value);
     }
 }

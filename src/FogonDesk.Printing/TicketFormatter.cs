@@ -25,7 +25,8 @@ namespace FogonDesk.Printing
             string systemFooterText = "",
             int horizontalOffset = 0,
             int verticalOffset = 0,
-            int charactersPerLine = 0)
+            int charactersPerLine = 0,
+            bool hideTotal = false)
         {
             var lines = new List<string>();
             int width = charactersPerLine > 0 ? Math.Max(24, Math.Min(48, charactersPerLine)) : ticketWidthMm == 58 ? 30 : 42;
@@ -46,8 +47,8 @@ namespace FogonDesk.Printing
                 lines.Add(CenterText("VENTA", width));
             }
 
-            lines.Add(FormatTwoColumns("Folio: " + folio, "Fecha: " + dateStr, width));
-            lines.Add(FormatTwoColumns("Atendió: " + cashierName, "Orden: " + orderKind, width));
+            lines.Add("Fecha: " + dateStr);
+            AppendTwoColumnsOrStacked(lines, "Atendió: " + cashierName, "Orden: " + orderKind, width);
             if (!string.IsNullOrWhiteSpace(note))
             {
                 AppendWrappedCenteredBlock(lines, "▶ " + note.ToUpper() + " ◀", width);
@@ -74,7 +75,8 @@ namespace FogonDesk.Printing
 
             lines.Add(new string('=', width));
 
-            lines.Add(FormatTwoColumns("TOTAL NETO:", "$" + NormalizeAmount(totalAmount), width));
+            lines.Add(FormatTwoColumns("TOTAL NETO:", hideTotal ? "APP" : "$" + NormalizeAmount(totalAmount), width));
+
             lines.Add(new string('=', width));
 
             if (!string.IsNullOrWhiteSpace(footerText))
@@ -215,6 +217,21 @@ namespace FogonDesk.Printing
             }
 
             return qtyStr + nStr + pStr;
+        }
+
+        private static void AppendTwoColumnsOrStacked(ICollection<string> lines, string left, string right, int width)
+        {
+            left = left ?? string.Empty;
+            right = right ?? string.Empty;
+
+            if (left.Length + 1 + right.Length <= width)
+            {
+                lines.Add(FormatTwoColumns(left, right, width));
+                return;
+            }
+
+            lines.Add(left.Length > width ? left.Substring(0, width) : left);
+            lines.Add(right.Length > width ? right.Substring(0, width) : right);
         }
 
         private static void AppendWrappedCenteredBlock(ICollection<string> lines, string text, int width)

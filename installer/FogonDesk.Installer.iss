@@ -1,5 +1,5 @@
 #define MyAppName "FogonDesk POS"
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.2.1"
 #define MyAppPublisher "FogonDesk"
 #define MyAppExeName "FogonDesk.Desktop.exe"
 
@@ -23,7 +23,7 @@ SetupLogging=yes
 
 [Files]
 Source: "..\src\FogonDesk.Desktop\bin\x86\Release\net48\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "seed\fogondesk.db"; DestDir: "{localappdata}\FogonDesk\data"; DestName: "fogondesk.db"; Flags: ignoreversion
+Source: "seed\fogondesk.db"; DestDir: "{localappdata}\FogonDesk\data"; DestName: "fogondesk.db"; Flags: onlyifdoesntexist
 Source: "seed\fogondesk.db"; DestDir: "{app}\seed"; DestName: "fogondesk.db"; Flags: ignoreversion
 
 [Icons]

@@ -31,6 +31,9 @@ namespace FogonDesk.Desktop
         private readonly ITicketPrintSettingsApplicationService ticketPrintSettingsApplicationService;
         private readonly ITelegramIntegrationService telegramIntegrationService;
         private readonly IOperationSettingsApplicationService operationSettingsApplicationService;
+        private readonly ICounterRepository counterRepository;
+        private readonly IDataResetService dataResetService;
+        private readonly Timer telegramPollTimer;
         private readonly Label shiftStatusLabel;
         private readonly Button administrationButton;
         private readonly List<PendingTicketDraft> pendingTickets = new List<PendingTicketDraft>();
@@ -57,7 +60,6 @@ namespace FogonDesk.Desktop
         private IList<string> lastReceiptLines;
         private string lastReceiptPrinterName;
         private string lastReceiptTitle;
-        private int nextTakeAwayNumber = 1;
         private string cashierOrderNote = string.Empty;
         private bool cashierOrderStarted;
         private IList<DigitalPlatformConfigurationView> configuredDigitalPlatforms = new List<DigitalPlatformConfigurationView>();
@@ -77,7 +79,9 @@ namespace FogonDesk.Desktop
             ISalesApplicationService salesApplicationService,
             ITicketPrintSettingsApplicationService ticketPrintSettingsApplicationService,
             ITelegramIntegrationService telegramIntegrationService,
-            IOperationSettingsApplicationService operationSettingsApplicationService)
+            IOperationSettingsApplicationService operationSettingsApplicationService,
+            ICounterRepository counterRepository,
+            IDataResetService dataResetService = null)
         {
             this.startupState = startupState;
             this.authenticatedUser = authenticatedUser;
@@ -90,6 +94,8 @@ namespace FogonDesk.Desktop
             this.ticketPrintSettingsApplicationService = ticketPrintSettingsApplicationService;
             this.telegramIntegrationService = telegramIntegrationService;
             this.operationSettingsApplicationService = operationSettingsApplicationService;
+            this.counterRepository = counterRepository;
+            this.dataResetService = dataResetService;
 
             LoadOperationSettings();
 
@@ -98,6 +104,15 @@ namespace FogonDesk.Desktop
             WindowState = FormWindowState.Maximized;
             BackColor = Color.FromArgb(238, 242, 246);
             Font = new Font("Segoe UI", 10F);
+
+            this.telegramPollTimer = new Timer { Interval = 6000 };
+            this.telegramPollTimer.Tick += delegate
+            {
+                var svc = this.telegramIntegrationService;
+                System.Threading.Tasks.Task.Run(() => { try { svc.SyncLinkRequests(); } catch { } });
+            };
+            this.telegramPollTimer.Start();
+            FormClosed += delegate { this.telegramPollTimer.Stop(); };
 
             if (string.Equals(this.authenticatedUser.RoleCode, SystemRoles.Cashier, StringComparison.OrdinalIgnoreCase))
             {
@@ -185,15 +200,16 @@ namespace FogonDesk.Desktop
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
-                RowCount = 4,
+                RowCount = 5,
                 Margin = new Padding(18, 0, 0, 0)
             };
             actionsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
             actionsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-            actionsGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 25F));
-            actionsGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 25F));
-            actionsGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 25F));
-            actionsGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 25F));
+            actionsGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 20F));
+            actionsGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 20F));
+            actionsGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 20F));
+            actionsGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 20F));
+            actionsGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 20F));
 
             actionsGrid.Controls.Add(CreateActionButton("Punto de venta", "Cobro rápido con productos y ticket", Color.FromArgb(228, 108, 10), OpenPointOfSale), 0, 0);
             this.administrationButton = CreateActionButton("Administración", "Alta de categorías, productos y usuarios", Color.FromArgb(52, 73, 94), OpenAdministration);
@@ -204,6 +220,10 @@ namespace FogonDesk.Desktop
             actionsGrid.Controls.Add(CreateActionButton("Configuración de ticket e impresión", "Impresora, diseño, fuentes y ticket", Color.FromArgb(96, 108, 56), OpenTicketPrintSettings), 1, 2);
             actionsGrid.Controls.Add(CreateActionButton("Telegram", "Bot, chats vinculados y codigos", Color.FromArgb(122, 94, 41), OpenTelegramSettings), 0, 3);
             actionsGrid.Controls.Add(CreateActionButton("Ticket de prueba", "Imprime ticket para validar formato", Color.FromArgb(88, 95, 107), PrintTestTicket), 1, 3);
+
+            var resetButton = CreateActionButton("Restablecer ventas", "Borra cortes, ventas y estadísticas (configuración intacta)", Color.FromArgb(160, 30, 30), ResetSalesData);
+            actionsGrid.SetColumnSpan(resetButton, 2);
+            actionsGrid.Controls.Add(resetButton, 0, 4);
 
             body.Controls.Add(overviewCard, 0, 0);
             body.Controls.Add(actionsGrid, 1, 0);
@@ -450,6 +470,114 @@ namespace FogonDesk.Desktop
                 result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
         }
 
+        private void ResetSalesData()
+        {
+            if (this.dataResetService == null)
+            {
+                MessageBox.Show("Servicio de restablecimiento no disponible.", "Restablecer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var confirm = MessageBox.Show(
+                "¿Estás seguro de que deseas borrar TODAS las ventas, cortes de caja y estadísticas?\n\nEsta acción NO se puede deshacer.\nLa configuración del sistema, menú y usuarios no se verá afectada.\n\nSe enviará un código de autorización al administrador por Telegram.",
+                "Restablecer ventas",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+
+            if (confirm != DialogResult.Yes)
+            {
+                return;
+            }
+
+            var settings = this.telegramIntegrationService.GetSettings();
+            if (string.IsNullOrWhiteSpace(settings.BotToken) || settings.LinkedChats == null || settings.LinkedChats.Count == 0)
+            {
+                MessageBox.Show("No hay chats de Telegram vinculados. Configura Telegram primero para poder autorizar el restablecimiento.", "Restablecer ventas", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var code = new Random().Next(100000, 999999).ToString();
+            var telegramResult = this.telegramIntegrationService.SendAdminBroadcast(
+                "🔐 Solicitud de restablecimiento\n\n"
+                + "⚠️ Alguien está intentando borrar TODOS los datos de ventas del sistema.\n\n"
+                + "Si autorizas esta acción, ingresa el siguiente código en la aplicación:\n\n"
+                + "🔑 Código: " + code + "\n\n"
+                + "Si no reconoces esta acción, ignora este mensaje.");
+
+            if (!telegramResult.Success)
+            {
+                MessageBox.Show("No se pudo enviar el código por Telegram: " + telegramResult.Message, "Restablecer ventas", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var enteredCode = PromptAuthorizationCode();
+            if (enteredCode == null)
+            {
+                return;
+            }
+
+            if (enteredCode.Trim() != code)
+            {
+                MessageBox.Show("Código incorrecto. Operación cancelada.", "Restablecer ventas", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var result = this.dataResetService.ResetSalesData();
+            MessageBox.Show(result.Message, "Restablecer ventas", MessageBoxButtons.OK, result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Error);
+        }
+
+        private string PromptAuthorizationCode()
+        {
+            using (var dialog = new Form())
+            {
+                dialog.Text = "Autorización requerida";
+                dialog.StartPosition = FormStartPosition.CenterParent;
+                dialog.Size = new Size(380, 200);
+                dialog.BackColor = Color.FromArgb(242, 245, 248);
+                dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+                dialog.MaximizeBox = false;
+                dialog.MinimizeBox = false;
+                dialog.Font = new Font("Segoe UI", 10F);
+
+                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Padding = new Padding(20) };
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+                layout.Controls.Add(new Label
+                {
+                    Dock = DockStyle.Fill,
+                    Text = "Ingresa el código de 6 dígitos\nque recibiste por Telegram:",
+                    TextAlign = ContentAlignment.MiddleLeft
+                }, 0, 0);
+
+                var codeBox = new TextBox
+                {
+                    Dock = DockStyle.Fill,
+                    Font = new Font("Segoe UI", 14F, FontStyle.Bold),
+                    TextAlign = HorizontalAlignment.Center,
+                    MaxLength = 6
+                };
+                layout.Controls.Add(codeBox, 0, 1);
+
+                var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 6, 0, 0) };
+                var okBtn = new Button { Text = "Confirmar", Width = 110, Height = 34, BackColor = Color.FromArgb(160, 30, 30), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, DialogResult = DialogResult.OK };
+                okBtn.FlatAppearance.BorderSize = 0;
+                var cancelBtn = new Button { Text = "Cancelar", Width = 90, Height = 34, BackColor = Color.FromArgb(90, 90, 90), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, DialogResult = DialogResult.Cancel, Margin = new Padding(8, 0, 0, 0) };
+                cancelBtn.FlatAppearance.BorderSize = 0;
+                buttons.Controls.Add(okBtn);
+                buttons.Controls.Add(cancelBtn);
+                layout.Controls.Add(buttons, 0, 2);
+
+                dialog.Controls.Add(layout);
+                dialog.AcceptButton = okBtn;
+                dialog.CancelButton = cancelBtn;
+
+                return dialog.ShowDialog(this) == DialogResult.OK ? codeBox.Text : null;
+            }
+        }
+
         private void RefreshDashboard()
         {
             var activeShift = this.cashShiftApplicationService.GetActiveShift(this.startupState.StationCode);
@@ -592,100 +720,222 @@ namespace FogonDesk.Desktop
             {
                 dialog.Text = "Corte y ventas";
                 dialog.StartPosition = FormStartPosition.CenterParent;
-                dialog.ClientSize = new Size(980, 580);
+                dialog.ClientSize = new Size(1220, 700);
                 dialog.FormBorderStyle = FormBorderStyle.Sizable;
-                dialog.MinimumSize = new Size(900, 520);
-                dialog.BackColor = Color.White;
+                dialog.MinimumSize = new Size(1120, 640);
+                dialog.BackColor = Color.FromArgb(242, 245, 248);
                 dialog.Font = new Font("Segoe UI", 10F);
 
-                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8, Padding = new Padding(16) };
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
+                var darkText = Color.FromArgb(33, 37, 41);
+                var mutedText = Color.FromArgb(100, 116, 139);
+                var greenAccent = Color.FromArgb(27, 67, 50);
+                var redAccent = Color.FromArgb(190, 60, 65);
+                var blueAccent = Color.FromArgb(69, 123, 157);
+                var amberAccent = Color.FromArgb(217, 119, 6);
 
-                var shiftSelectorPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-                shiftSelectorPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140F));
-                shiftSelectorPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-                shiftSelectorPanel.Controls.Add(new Label
+                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(18) };
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 96F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 150F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56F));
+
+                Func<string, Color, Button> makeFlatButton = (text, color) =>
+                {
+                    var button = new Button
+                    {
+                        Text = text,
+                        Height = 36,
+                        AutoSize = true,
+                        AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                        Padding = new Padding(14, 0, 14, 0),
+                        BackColor = color,
+                        ForeColor = Color.White,
+                        FlatStyle = FlatStyle.Flat,
+                        Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold),
+                        Margin = new Padding(8, 0, 0, 0)
+                    };
+                    button.FlatAppearance.BorderSize = 0;
+                    return button;
+                };
+
+                // ---- Header: title + shift selector ----
+                var headerCard = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, Padding = new Padding(18, 0, 18, 0), Margin = new Padding(0, 0, 0, 14) };
+                var headerLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1 };
+                headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260F));
+                headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 55F));
+                headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 370F));
+                headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+                headerLayout.Controls.Add(new Label
+                {
+                    Text = "Corte y ventas",
+                    Dock = DockStyle.Fill,
+                    Font = new Font("Segoe UI Semibold", 17F, FontStyle.Bold),
+                    ForeColor = greenAccent,
+                    TextAlign = ContentAlignment.MiddleLeft
+                }, 0, 0);
+                headerLayout.Controls.Add(new Label
                 {
                     Text = "Corte:",
                     Dock = DockStyle.Fill,
-                    TextAlign = ContentAlignment.MiddleLeft,
-                    Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold)
-                }, 0, 0);
+                    Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold),
+                    ForeColor = darkText,
+                    TextAlign = ContentAlignment.MiddleRight
+                }, 1, 0);
                 var shiftCombo = new ComboBox
                 {
-                    Dock = DockStyle.Fill,
+                    Dock = DockStyle.None,
+                    Anchor = AnchorStyles.Left,
                     DropDownStyle = ComboBoxStyle.DropDownList,
+                    Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold),
+                    Width = 360,
+                    Margin = new Padding(0, 15, 0, 0),
                     DataSource = shiftOptions
                 };
-                shiftSelectorPanel.Controls.Add(shiftCombo, 1, 0);
+                headerLayout.Controls.Add(shiftCombo, 2, 0);
+                headerCard.Controls.Add(headerLayout);
 
-                var summaryTitleLabel = new Label { Dock = DockStyle.Fill, Text = string.Empty, Font = new Font("Segoe UI Semibold", 13F, FontStyle.Bold), ForeColor = Color.FromArgb(27, 67, 50), TextAlign = ContentAlignment.MiddleLeft };
-                var summaryCountsLabel = new Label { Dock = DockStyle.Fill, Text = string.Empty, TextAlign = ContentAlignment.MiddleLeft };
-                var summaryConfirmedLabel = new Label { Dock = DockStyle.Fill, Text = string.Empty, TextAlign = ContentAlignment.MiddleLeft };
-                var summaryCancelledLabel = new Label { Dock = DockStyle.Fill, Text = string.Empty, TextAlign = ContentAlignment.MiddleLeft };
-                var summaryNetLabel = new Label { Dock = DockStyle.Fill, Text = string.Empty, Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
+                // ---- Hero stat cards ----
+                Func<string, Color, Tuple<Panel, Label>> createStatCard = (caption, accent) =>
+                {
+                    var card = new Panel { BackColor = Color.White, Margin = new Padding(0, 0, 14, 0), Padding = new Padding(16, 10, 12, 10), Width = 230, Height = 90 };
+                    var accentBar = new Panel { Dock = DockStyle.Left, Width = 5, BackColor = accent };
+                    var textHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10, 6, 0, 6) };
+                    var captionLabel = new Label
+                    {
+                        Dock = DockStyle.Top,
+                        Height = 20,
+                        Text = caption,
+                        ForeColor = mutedText,
+                        Font = new Font("Segoe UI Semibold", 8.5F, FontStyle.Bold)
+                    };
+                    var valueLabel = new Label
+                    {
+                        Dock = DockStyle.Fill,
+                        Text = "0",
+                        ForeColor = darkText,
+                        Font = new Font("Segoe UI Semibold", 17F, FontStyle.Bold),
+                        TextAlign = ContentAlignment.MiddleLeft
+                    };
+                    textHost.Controls.Add(valueLabel);
+                    textHost.Controls.Add(captionLabel);
+                    card.Controls.Add(textHost);
+                    card.Controls.Add(accentBar);
+                    return Tuple.Create(card, valueLabel);
+                };
 
-                layout.Controls.Add(shiftSelectorPanel, 0, 0);
-                layout.Controls.Add(summaryTitleLabel, 0, 1);
-                layout.Controls.Add(summaryCountsLabel, 0, 2);
-                layout.Controls.Add(summaryConfirmedLabel, 0, 3);
-                layout.Controls.Add(summaryCancelledLabel, 0, 4);
-                layout.Controls.Add(summaryNetLabel, 0, 5);
+                var ticketsCard = createStatCard("TICKETS VENDIDOS", blueAccent);
+                var confirmedCard = createStatCard("CONFIRMADOS", greenAccent);
+                var cancelledCard = createStatCard("CANCELADOS", redAccent);
+                var netCard = createStatCard("TOTAL NETO", greenAccent);
 
-                var detailHost = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-                detailHost.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 340F));
+                var heroRow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Margin = new Padding(0, 0, 0, 14) };
+                heroRow.Controls.Add(ticketsCard.Item1);
+                heroRow.Controls.Add(confirmedCard.Item1);
+                heroRow.Controls.Add(cancelledCard.Item1);
+                heroRow.Controls.Add(netCard.Item1);
+
+                // ---- Breakdown card: payment methods + order kinds ----
+                var breakdownCard = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, Padding = new Padding(24, 16, 24, 16) };
+                var breakdownLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+                breakdownLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+                breakdownLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+
+                Func<string, string[], Tuple<Panel, Dictionary<string, Label>>> createBreakdownGroup = (title, rowKeys) =>
+                {
+                    var group = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = rowKeys.Length + 1 };
+                    group.RowStyles.Add(new RowStyle(SizeType.Absolute, 26F));
+                    for (var index = 0; index < rowKeys.Length; index++)
+                    {
+                        group.RowStyles.Add(new RowStyle(SizeType.Absolute, 26F));
+                    }
+
+                    group.Controls.Add(new Label
+                    {
+                        Text = title,
+                        Dock = DockStyle.Fill,
+                        Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold),
+                        ForeColor = greenAccent,
+                        TextAlign = ContentAlignment.MiddleLeft
+                    }, 0, 0);
+
+                    var valueLabels = new Dictionary<string, Label>();
+                    for (var index = 0; index < rowKeys.Length; index++)
+                    {
+                        var rowPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+                        rowPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60F));
+                        rowPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40F));
+                        rowPanel.Controls.Add(new Label { Text = rowKeys[index], Dock = DockStyle.Fill, ForeColor = mutedText, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+                        var valueLabel = new Label { Text = "—", Dock = DockStyle.Fill, ForeColor = darkText, Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleRight };
+                        rowPanel.Controls.Add(valueLabel, 1, 0);
+                        group.Controls.Add(rowPanel, 0, index + 1);
+                        valueLabels[rowKeys[index]] = valueLabel;
+                    }
+
+                    var host = new Panel { Dock = DockStyle.Fill };
+                    host.Controls.Add(group);
+                    return Tuple.Create(host, valueLabels);
+                };
+
+                var paymentGroup = createBreakdownGroup("MÉTODOS DE PAGO", new[] { "Efectivo", "Tarjeta", "Transferencia" });
+                var orderKindGroup = createBreakdownGroup("TIPOS DE ORDEN", new[] { "Mesas", "Para llevar", "Plataformas digitales" });
+
+                breakdownLayout.Controls.Add(paymentGroup.Item1, 0, 0);
+                breakdownLayout.Controls.Add(orderKindGroup.Item1, 1, 0);
+                breakdownCard.Controls.Add(breakdownLayout);
+
+                var detailHost = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = new Padding(0, 14, 0, 0) };
+                detailHost.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300F));
                 detailHost.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+                detailHost.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 280F));
 
+                // ---- Tickets list ----
+                var salesListCard = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, Padding = new Padding(14, 12, 14, 12), Margin = new Padding(0, 0, 14, 0) };
+                var salesListLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+                salesListLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
+                salesListLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+                salesListLayout.Controls.Add(new Label { Text = "Tickets del corte", Dock = DockStyle.Fill, Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold), ForeColor = greenAccent, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
                 var salesList = new ListBox
                 {
                     Dock = DockStyle.Fill,
-                    Font = new Font("Segoe UI", 10F),
+                    Font = new Font("Segoe UI", 9.5F),
+                    BorderStyle = BorderStyle.FixedSingle,
                     HorizontalScrollbar = true
                 };
+                salesListLayout.Controls.Add(salesList, 0, 1);
+                salesListCard.Controls.Add(salesListLayout);
 
-                var detailPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Padding = new Padding(10, 0, 0, 0) };
-                detailPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
-                detailPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
-                detailPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
-                detailPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
-                detailPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+                // ---- Ticket detail ----
+                var detailCard = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, Padding = new Padding(18, 12, 18, 12), Margin = new Padding(0, 0, 14, 0) };
+                var detailPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6 };
+                detailPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32F));
+                detailPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 26F));
+                detailPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
+                detailPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 26F));
                 detailPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+                detailPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 46F));
 
-                var saleHeaderLabel = new Label { Dock = DockStyle.Fill, Text = "Selecciona un ticket vendido para ver su detalle.", Font = new Font("Segoe UI Semibold", 10.5F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
-                var saleMeta1Label = new Label { Dock = DockStyle.Fill, Text = string.Empty, TextAlign = ContentAlignment.MiddleLeft };
-                var saleMeta2Label = new Label { Dock = DockStyle.Fill, Text = string.Empty, TextAlign = ContentAlignment.MiddleLeft };
-                var saleMeta3Label = new Label { Dock = DockStyle.Fill, Text = string.Empty, TextAlign = ContentAlignment.MiddleLeft };
-                var cancelTicketButton = new Button
-                {
-                    Text = "Cancelar ticket",
-                    Width = 140,
-                    Height = 32,
-                    BackColor = Color.FromArgb(220, 80, 85),
-                    ForeColor = Color.White,
-                    FlatStyle = FlatStyle.Flat,
-                    Enabled = false
-                };
-                cancelTicketButton.FlatAppearance.BorderSize = 0;
+                var saleHeaderLabel = new Label { Dock = DockStyle.Fill, Text = "Selecciona un ticket vendido para ver su detalle.", Font = new Font("Segoe UI Semibold", 12F, FontStyle.Bold), ForeColor = darkText, TextAlign = ContentAlignment.MiddleLeft };
+                var saleMeta1Label = new Label { Dock = DockStyle.Fill, Text = string.Empty, ForeColor = mutedText, TextAlign = ContentAlignment.MiddleLeft };
+                var saleMeta2Label = new Label { Dock = DockStyle.Fill, Text = string.Empty, Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold), ForeColor = darkText, TextAlign = ContentAlignment.MiddleLeft };
+                var saleMeta3Label = new Label { Dock = DockStyle.Fill, Text = string.Empty, ForeColor = mutedText, TextAlign = ContentAlignment.MiddleLeft };
 
-                var detailActions = new FlowLayoutPanel
+                var cancelTicketButton = makeFlatButton("Cancelar ticket", redAccent);
+                cancelTicketButton.Enabled = false;
+                var editPaymentButton = makeFlatButton("Editar pago", blueAccent);
+                editPaymentButton.Enabled = false;
+                var reprintTicketButton = makeFlatButton("Reimprimir", greenAccent);
+
+                var bottomActionsPanel = new FlowLayoutPanel
                 {
                     Dock = DockStyle.Fill,
                     FlowDirection = FlowDirection.RightToLeft,
                     WrapContents = false,
-                    Margin = new Padding(0)
+                    Margin = new Padding(0, 10, 0, 0)
                 };
-                detailActions.Controls.Add(cancelTicketButton);
-
-                ShiftSelectionItem selectedShift = null;
-                IList<SoldTicketSummary> soldTickets = new List<SoldTicketSummary>();
-                Button confirmShiftButton = null;
+                bottomActionsPanel.Controls.Add(cancelTicketButton);
+                bottomActionsPanel.Controls.Add(editPaymentButton);
+                bottomActionsPanel.Controls.Add(reprintTicketButton);
 
                 var itemsGrid = new DataGridView
                 {
@@ -695,12 +945,37 @@ namespace FogonDesk.Desktop
                     ReadOnly = true,
                     SelectionMode = DataGridViewSelectionMode.FullRowSelect,
                     BackgroundColor = Color.White,
-                    BorderStyle = BorderStyle.FixedSingle
+                    BorderStyle = BorderStyle.FixedSingle,
+                    Margin = new Padding(0, 8, 0, 0)
                 };
                 itemsGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Producto", DataPropertyName = "ProductName", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
                 itemsGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Cant.", DataPropertyName = "Quantity", Width = 70 });
                 itemsGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Unit.", DataPropertyName = "UnitPrice", Width = 85, DefaultCellStyle = new DataGridViewCellStyle { Format = "N2" } });
                 itemsGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Total", DataPropertyName = "LineTotal", Width = 95, DefaultCellStyle = new DataGridViewCellStyle { Format = "N2" } });
+
+                // ---- Receipt preview ----
+                var receiptPreviewCard = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, Padding = new Padding(14, 12, 14, 12) };
+                var receiptPreviewPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+                receiptPreviewPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
+                receiptPreviewPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+                receiptPreviewPanel.Controls.Add(new Label { Text = "Vista previa del ticket", Dock = DockStyle.Fill, Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold), ForeColor = greenAccent, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+                var receiptPreviewBox = new TextBox
+                {
+                    Dock = DockStyle.Fill,
+                    Multiline = true,
+                    ReadOnly = true,
+                    ScrollBars = ScrollBars.Vertical,
+                    Font = new Font("Consolas", 8.5F),
+                    BackColor = Color.FromArgb(250, 250, 251),
+                    BorderStyle = BorderStyle.FixedSingle
+                };
+                receiptPreviewPanel.Controls.Add(receiptPreviewBox, 0, 1);
+                receiptPreviewCard.Controls.Add(receiptPreviewPanel);
+                detailCard.Controls.Add(detailPanel);
+
+                ShiftSelectionItem selectedShift = null;
+                IList<SoldTicketSummary> soldTickets = new List<SoldTicketSummary>();
+                Button confirmShiftButton = null;
 
                 salesList.SelectedIndexChanged += delegate
                 {
@@ -713,14 +988,20 @@ namespace FogonDesk.Desktop
                         saleMeta2Label.Text = string.Empty;
                         saleMeta3Label.Text = string.Empty;
                         cancelTicketButton.Enabled = false;
+                        editPaymentButton.Enabled = false;
+                        receiptPreviewBox.Text = string.Empty;
                         return;
                     }
 
                     saleHeaderLabel.Text = "Ticket " + selected.Folio + " | " + selected.OrderDisplayName;
                     saleMeta1Label.Text = "Estado: " + selected.Status + " | Fecha: " + selected.SoldLocal.ToString("dd/MM/yyyy HH:mm") + " | Cajero: " + selected.CashierDisplayName;
-                    saleMeta2Label.Text = "Total: $" + selected.Total.ToString("N2");
+                    saleMeta2Label.Text = "Total: $" + selected.Total.ToString("N2") + " | Pago: " + selected.PaymentMethod;
                     saleMeta3Label.Text = string.IsNullOrWhiteSpace(selected.Note) ? string.Empty : "Nota: " + selected.Note;
                     cancelTicketButton.Enabled = selected.Status == SaleStatus.Confirmada;
+                    editPaymentButton.Enabled = selected.Status == SaleStatus.Confirmada;
+                    receiptPreviewBox.Text = string.IsNullOrWhiteSpace(selected.ReceiptText)
+                        ? "No hay un comprobante guardado para este ticket."
+                        : selected.ReceiptText;
                     itemsGrid.DataSource = selected.Items.Select(item => new
                     {
                         ProductName = item.ProductName,
@@ -728,6 +1009,54 @@ namespace FogonDesk.Desktop
                         UnitPrice = item.UnitPrice,
                         LineTotal = item.LineTotal
                     }).ToList();
+                };
+
+                editPaymentButton.Click += delegate
+                {
+                    var selected = salesList.SelectedItem as SoldTicketSummary;
+                    if (selected == null || selected.Status != SaleStatus.Confirmada)
+                    {
+                        return;
+                    }
+
+                    var newMethod = PromptPaymentMethodEdit(selected.PaymentMethod);
+                    if (!newMethod.HasValue || newMethod.Value == selected.PaymentMethod)
+                    {
+                        return;
+                    }
+
+                    var updateResult = this.salesApplicationService.UpdatePaymentMethod(selected.SaleId, newMethod.Value);
+                    MessageBox.Show(updateResult.Message, "Editar método de pago", MessageBoxButtons.OK, updateResult.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                    if (!updateResult.Success)
+                    {
+                        return;
+                    }
+
+                    ApplyShiftSummary(selectedShift);
+                };
+
+                reprintTicketButton.Click += delegate
+                {
+                    var selected = salesList.SelectedItem as SoldTicketSummary;
+                    if (selected == null || string.IsNullOrWhiteSpace(selected.ReceiptText))
+                    {
+                        MessageBox.Show("No hay un comprobante guardado para este ticket.", "Reimprimir ticket", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(this.startupState.ActivePrinterName))
+                    {
+                        MessageBox.Show("Configura una impresora antes de reimprimir.", "Reimprimir ticket", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+
+                    var printResult = this.ticketPrinter.Print(new TicketPrintJob
+                    {
+                        PrinterName = this.startupState.ActivePrinterName,
+                        Title = "Ticket de venta (reimpresión)",
+                        Lines = selected.ReceiptText.Split(new[] { Environment.NewLine }, StringSplitOptions.None)
+                    });
+                    MessageBox.Show(printResult.Message, "Reimprimir ticket", MessageBoxButtons.OK, printResult.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
                 };
 
                 cancelTicketButton.Click += delegate
@@ -774,29 +1103,40 @@ namespace FogonDesk.Desktop
                     RefreshDashboard();
                 };
 
-                detailPanel.Controls.Add(detailActions, 0, 0);
-                detailPanel.Controls.Add(saleHeaderLabel, 0, 1);
-                detailPanel.Controls.Add(saleMeta1Label, 0, 2);
-                detailPanel.Controls.Add(saleMeta2Label, 0, 3);
-                detailPanel.Controls.Add(saleMeta3Label, 0, 4);
-                detailPanel.Controls.Add(itemsGrid, 0, 5);
+                detailPanel.Controls.Add(saleHeaderLabel, 0, 0);
+                detailPanel.Controls.Add(saleMeta1Label, 0, 1);
+                detailPanel.Controls.Add(saleMeta2Label, 0, 2);
+                detailPanel.Controls.Add(saleMeta3Label, 0, 3);
+                detailPanel.Controls.Add(itemsGrid, 0, 4);
+                detailPanel.Controls.Add(bottomActionsPanel, 0, 5);
 
-                detailHost.Controls.Add(salesList, 0, 0);
-                detailHost.Controls.Add(detailPanel, 1, 0);
-                layout.Controls.Add(detailHost, 0, 6);
+                detailHost.Controls.Add(salesListCard, 0, 0);
+                detailHost.Controls.Add(detailCard, 1, 0);
+                detailHost.Controls.Add(receiptPreviewCard, 2, 0);
 
-                var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
-                var closeButton = new Button { Text = "Cerrar", Width = 110, Height = 32, DialogResult = DialogResult.Cancel };
-                confirmShiftButton = new Button
+                layout.Controls.Add(headerCard, 0, 0);
+                layout.Controls.Add(heroRow, 0, 1);
+                layout.Controls.Add(breakdownCard, 0, 2);
+                layout.Controls.Add(detailHost, 0, 3);
+
+                var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Margin = new Padding(0, 10, 0, 0) };
+                var closeButton = new Button
                 {
-                    Text = "Confirmar Corte",
-                    Width = 150,
-                    Height = 32,
-                    BackColor = Color.FromArgb(27, 67, 50),
-                    ForeColor = Color.White,
-                    FlatStyle = FlatStyle.Flat
+                    Text = "Cerrar",
+                    Height = 36,
+                    AutoSize = true,
+                    AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                    Padding = new Padding(14, 0, 14, 0),
+                    Margin = new Padding(8, 0, 0, 0),
+                    BackColor = Color.White,
+                    ForeColor = darkText,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold),
+                    DialogResult = DialogResult.Cancel
                 };
-                confirmShiftButton.FlatAppearance.BorderSize = 0;
+                closeButton.FlatAppearance.BorderSize = 1;
+                closeButton.FlatAppearance.BorderColor = Color.FromArgb(206, 212, 218);
+                confirmShiftButton = makeFlatButton("Confirmar Corte", greenAccent);
 
                 confirmShiftButton.Click += delegate
                 {
@@ -823,15 +1163,13 @@ namespace FogonDesk.Desktop
                     }
 
                     var confirmedTickets = soldTickets.Where(item => item.Status == SaleStatus.Confirmada).ToList();
-                    var cancelledTickets = soldTickets.Where(item => item.Status == SaleStatus.Cancelada).ToList();
                     var confirmedTotal = confirmedTickets.Sum(item => item.Total);
-                    var cancelledTotal = cancelledTickets.Sum(item => item.Total);
-                    var netTotal = confirmedTotal - cancelledTotal;
-                    var cashTotal = soldTickets.Where(item => item.PaymentMethod == PaymentMethod.Efectivo).Sum(item => item.Status == SaleStatus.Cancelada ? -item.Total : item.Total);
-                    var cardTotal = soldTickets.Where(item => item.PaymentMethod == PaymentMethod.Tarjeta).Sum(item => item.Status == SaleStatus.Cancelada ? -item.Total : item.Total);
-                    var transferTotal = soldTickets.Where(item => item.PaymentMethod == PaymentMethod.Transferencia).Sum(item => item.Status == SaleStatus.Cancelada ? -item.Total : item.Total);
-                    var investmentTotal = soldTickets.Sum(item => item.Status == SaleStatus.Cancelada ? -item.EstimatedCostTotal : item.EstimatedCostTotal);
-                    var profitTotal = soldTickets.Sum(item => item.Status == SaleStatus.Cancelada ? -item.EstimatedProfitTotal : item.EstimatedProfitTotal);
+                    var netTotal = confirmedTotal;
+                    var cashTotal = confirmedTickets.Where(item => item.PaymentMethod == PaymentMethod.Efectivo).Sum(item => item.Total);
+                    var cardTotal = confirmedTickets.Where(item => item.PaymentMethod == PaymentMethod.Tarjeta).Sum(item => item.Total);
+                    var transferTotal = confirmedTickets.Where(item => item.PaymentMethod == PaymentMethod.Transferencia).Sum(item => item.Total);
+                    var investmentTotal = confirmedTickets.Sum(item => item.EstimatedCostTotal);
+                    var profitTotal = confirmedTickets.Sum(item => item.EstimatedProfitTotal);
 
                     var closeResult = this.cashShiftApplicationService.CloseShift(new CloseCashShiftRequest
                     {
@@ -839,15 +1177,16 @@ namespace FogonDesk.Desktop
                         UserId = this.authenticatedUser.UserId,
                         UserName = this.authenticatedUser.Username,
                         ActualCash = countedCash.Value,
-                        TelegramSummaryMessage = "[CORTE] " + selectedShift.Folio + " cerrado por " + (this.authenticatedUser.Username ?? string.Empty)
-                            + ". Neto: $" + netTotal.ToString("N2")
-                            + " | Efectivo: $" + cashTotal.ToString("N2")
-                            + " | Tarjeta: $" + cardTotal.ToString("N2")
-                            + " | Transferencia: $" + transferTotal.ToString("N2")
-                            + " | Inversion: $" + investmentTotal.ToString("N2")
-                            + " | Ganancia: $" + profitTotal.ToString("N2")
-                            + " | Esperado: $" + activeShift.ExpectedCash.ToString("N2")
-                            + " | Real: $" + countedCash.Value.ToString("N2") + "."
+                        TelegramSummaryMessage = "📊 Corte cerrado: " + selectedShift.Folio + "\n"
+                            + "👤 Cerrado por: " + (this.authenticatedUser.Username ?? string.Empty) + "\n\n"
+                            + "💰 Total neto: $" + netTotal.ToString("N2") + "\n"
+                            + "💵 Efectivo: $" + cashTotal.ToString("N2") + "\n"
+                            + "💳 Tarjeta: $" + cardTotal.ToString("N2") + "\n"
+                            + "🔁 Transferencia: $" + transferTotal.ToString("N2") + "\n\n"
+                            + "📦 Inversión: $" + investmentTotal.ToString("N2") + "\n"
+                            + "📈 Ganancia: $" + profitTotal.ToString("N2") + "\n\n"
+                            + "🧾 Esperado en caja: $" + activeShift.ExpectedCash.ToString("N2") + "\n"
+                            + "✅ Contado: $" + countedCash.Value.ToString("N2")
                     });
 
                     MessageBox.Show(closeResult.Message, "Confirmar corte", MessageBoxButtons.OK, closeResult.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
@@ -856,13 +1195,14 @@ namespace FogonDesk.Desktop
                         return;
                     }
 
+                    this.counterRepository.ResetValue("take_away_number", 1);
                     RefreshDashboard();
                     dialog.Close();
                 };
 
                 buttons.Controls.Add(closeButton);
                 buttons.Controls.Add(confirmShiftButton);
-                layout.Controls.Add(buttons, 0, 7);
+                layout.Controls.Add(buttons, 0, 4);
 
                 dialog.Controls.Add(layout);
                 dialog.CancelButton = closeButton;
@@ -878,27 +1218,31 @@ namespace FogonDesk.Desktop
                     soldTickets = LoadSoldTicketsForShift(selectedShift.ShiftId);
                     var confirmedCount = soldTickets.Count(item => item.Status == SaleStatus.Confirmada);
                     var cancelledCount = soldTickets.Count(item => item.Status == SaleStatus.Cancelada);
-                    var confirmedTotal = soldTickets.Where(item => item.Status == SaleStatus.Confirmada).Sum(item => item.Total);
-                    var cancelledTotal = soldTickets.Where(item => item.Status == SaleStatus.Cancelada).Sum(item => item.Total);
-                    var netTotal = confirmedTotal - cancelledTotal;
-                    var cashTotal = soldTickets.Where(item => item.PaymentMethod == PaymentMethod.Efectivo).Sum(item => item.Status == SaleStatus.Cancelada ? -item.Total : item.Total);
-                    var cardTotal = soldTickets.Where(item => item.PaymentMethod == PaymentMethod.Tarjeta).Sum(item => item.Status == SaleStatus.Cancelada ? -item.Total : item.Total);
-                    var transferTotal = soldTickets.Where(item => item.PaymentMethod == PaymentMethod.Transferencia).Sum(item => item.Status == SaleStatus.Cancelada ? -item.Total : item.Total);
-                    var investmentTotal = soldTickets.Sum(item => item.Status == SaleStatus.Cancelada ? -item.EstimatedCostTotal : item.EstimatedCostTotal);
-                    var profitTotal = soldTickets.Sum(item => item.Status == SaleStatus.Cancelada ? -item.EstimatedProfitTotal : item.EstimatedProfitTotal);
+                    var confirmedTicketsForSummary = soldTickets.Where(item => item.Status == SaleStatus.Confirmada).ToList();
+                    var confirmedTotal = confirmedTicketsForSummary.Sum(item => item.Total);
+                    var netTotal = confirmedTotal;
+                    var cashTotal = confirmedTicketsForSummary.Where(item => item.PaymentMethod == PaymentMethod.Efectivo).Sum(item => item.Total);
+                    var cardTotal = confirmedTicketsForSummary.Where(item => item.PaymentMethod == PaymentMethod.Tarjeta).Sum(item => item.Total);
+                    var transferTotal = confirmedTicketsForSummary.Where(item => item.PaymentMethod == PaymentMethod.Transferencia).Sum(item => item.Total);
 
-                    var statusText = string.Equals(selectedShift.Status, "abierta", StringComparison.OrdinalIgnoreCase) ? "Activo" : "Cerrado";
-                    summaryTitleLabel.Text = "Resumen del corte " + selectedShift.Folio + " (" + statusText + ")";
-                    summaryCountsLabel.Text = "Tickets vendidos: " + soldTickets.Count + "  |  Confirmadas: " + confirmedCount + "  |  Canceladas: " + cancelledCount;
-                    summaryConfirmedLabel.Text = "Ventas confirmadas: $" + confirmedTotal.ToString("N2");
-                    summaryCancelledLabel.Text = "Cancelaciones: $" + cancelledTotal.ToString("N2");
-                    summaryNetLabel.Text = "Total neto: $" + netTotal.ToString("N2")
-                        + " | Efectivo: $" + cashTotal.ToString("N2")
-                        + " | Tarjeta: $" + cardTotal.ToString("N2")
-                        + " | Transferencia: $" + transferTotal.ToString("N2")
-                        + Environment.NewLine
-                        + "Inversion estimada: $" + investmentTotal.ToString("N2")
-                        + " | Ganancia estimada: $" + profitTotal.ToString("N2");
+                    var mesaCount = soldTickets.Count(item => item.OrderKind == OrderKind.Mesa);
+                    var takeAwayCount = soldTickets.Count(item => item.OrderKind == OrderKind.ParaLlevar);
+                    var platformCount = soldTickets.Count(item => item.OrderKind == OrderKind.PlataformaDigital);
+                    var counterCount = soldTickets.Count(item => item.OrderKind == OrderKind.Mostrador);
+
+                    ticketsCard.Item2.Text = soldTickets.Count.ToString(CultureInfo.InvariantCulture);
+                    confirmedCard.Item2.Text = confirmedCount.ToString(CultureInfo.InvariantCulture);
+                    cancelledCard.Item2.Text = cancelledCount.ToString(CultureInfo.InvariantCulture);
+                    netCard.Item2.Text = "$" + netTotal.ToString("N2");
+                    netCard.Item2.ForeColor = netTotal < 0 ? redAccent : darkText;
+
+                    paymentGroup.Item2["Efectivo"].Text = "$" + cashTotal.ToString("N2");
+                    paymentGroup.Item2["Tarjeta"].Text = "$" + cardTotal.ToString("N2");
+                    paymentGroup.Item2["Transferencia"].Text = "$" + transferTotal.ToString("N2");
+
+                    orderKindGroup.Item2["Mesas"].Text = (mesaCount + counterCount).ToString(CultureInfo.InvariantCulture);
+                    orderKindGroup.Item2["Para llevar"].Text = takeAwayCount.ToString(CultureInfo.InvariantCulture);
+                    orderKindGroup.Item2["Plataformas digitales"].Text = platformCount.ToString(CultureInfo.InvariantCulture);
 
                     salesList.BeginUpdate();
                     salesList.Items.Clear();
@@ -914,6 +1258,8 @@ namespace FogonDesk.Desktop
                     saleMeta2Label.Text = string.Empty;
                     saleMeta3Label.Text = string.Empty;
                     cancelTicketButton.Enabled = false;
+                    editPaymentButton.Enabled = false;
+                    receiptPreviewBox.Text = string.Empty;
                     confirmShiftButton.Enabled = string.Equals(selectedShift.Status, "abierta", StringComparison.OrdinalIgnoreCase);
 
                     if (salesList.Items.Count > 0)
@@ -1033,7 +1379,7 @@ LIMIT 1;";
                     using (var command = connection.CreateCommand())
                     {
                         command.CommandText = @"
-SELECT s.id, s.folio, s.order_kind, s.status, s.sold_utc, s.total, s.note, COALESCE(u.display_name, ''), COALESCE(s.payment_summary, ''), COALESCE(s.estimated_cost_total, 0), COALESCE(s.estimated_profit_total, 0)
+SELECT s.id, s.folio, s.order_kind, s.status, s.sold_utc, s.total, s.note, COALESCE(u.display_name, ''), COALESCE(s.payment_summary, ''), COALESCE(s.estimated_cost_total, 0), COALESCE(s.estimated_profit_total, 0), COALESCE(s.receipt_text, '')
 FROM sales s
 LEFT JOIN users u ON u.id = s.sold_by_user_id
 WHERE s.cash_shift_id = @shiftId
@@ -1056,7 +1402,8 @@ ORDER BY s.sold_utc DESC;";
                                     CashierDisplayName = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
                                     PaymentMethod = ParsePaymentMethod(reader.IsDBNull(8) ? string.Empty : reader.GetString(8)),
                                     EstimatedCostTotal = reader.IsDBNull(9) ? 0m : Convert.ToDecimal(reader.GetValue(9), CultureInfo.InvariantCulture),
-                                    EstimatedProfitTotal = reader.IsDBNull(10) ? 0m : Convert.ToDecimal(reader.GetValue(10), CultureInfo.InvariantCulture)
+                                    EstimatedProfitTotal = reader.IsDBNull(10) ? 0m : Convert.ToDecimal(reader.GetValue(10), CultureInfo.InvariantCulture),
+                                    ReceiptText = reader.IsDBNull(11) ? string.Empty : reader.GetString(11)
                                 };
                                 ticket.OrderDisplayName = BuildSoldTicketOrderDisplayName(ticket.OrderKind, ticket.Note);
                                 tickets.Add(ticket);
@@ -1064,28 +1411,32 @@ ORDER BY s.sold_utc DESC;";
                         }
                     }
 
-                    foreach (var ticket in tickets)
+                    var ticketsBySaleId = tickets.ToDictionary(item => item.SaleId);
+                    using (var itemCommand = connection.CreateCommand())
                     {
-                        using (var itemCommand = connection.CreateCommand())
-                        {
-                            itemCommand.CommandText = @"
-SELECT product_name_snapshot, quantity, unit_price, line_total
+                        itemCommand.CommandText = @"
+SELECT sale_id, product_name_snapshot, quantity, unit_price, line_total
 FROM sale_items
-WHERE sale_id = @saleId
-ORDER BY id ASC;";
-                            itemCommand.Parameters.AddWithValue("@saleId", ticket.SaleId);
-                            using (var itemReader = itemCommand.ExecuteReader())
+WHERE sale_id IN (SELECT id FROM sales WHERE cash_shift_id = @shiftId)
+ORDER BY sale_id ASC, id ASC;";
+                        itemCommand.Parameters.AddWithValue("@shiftId", shiftId);
+                        using (var itemReader = itemCommand.ExecuteReader())
+                        {
+                            while (itemReader.Read())
                             {
-                                while (itemReader.Read())
+                                SoldTicketSummary ticket;
+                                if (!ticketsBySaleId.TryGetValue(itemReader.GetInt32(0), out ticket))
                                 {
-                                    ticket.Items.Add(new SoldTicketLine
-                                    {
-                                        ProductName = itemReader.IsDBNull(0) ? string.Empty : itemReader.GetString(0),
-                                        Quantity = itemReader.IsDBNull(1) ? 0m : Convert.ToDecimal(itemReader.GetValue(1), CultureInfo.InvariantCulture),
-                                        UnitPrice = itemReader.IsDBNull(2) ? 0m : Convert.ToDecimal(itemReader.GetValue(2), CultureInfo.InvariantCulture),
-                                        LineTotal = itemReader.IsDBNull(3) ? 0m : Convert.ToDecimal(itemReader.GetValue(3), CultureInfo.InvariantCulture)
-                                    });
+                                    continue;
                                 }
+
+                                ticket.Items.Add(new SoldTicketLine
+                                {
+                                    ProductName = itemReader.IsDBNull(1) ? string.Empty : itemReader.GetString(1),
+                                    Quantity = itemReader.IsDBNull(2) ? 0m : Convert.ToDecimal(itemReader.GetValue(2), CultureInfo.InvariantCulture),
+                                    UnitPrice = itemReader.IsDBNull(3) ? 0m : Convert.ToDecimal(itemReader.GetValue(3), CultureInfo.InvariantCulture),
+                                    LineTotal = itemReader.IsDBNull(4) ? 0m : Convert.ToDecimal(itemReader.GetValue(4), CultureInfo.InvariantCulture)
+                                });
                             }
                         }
                     }
@@ -2097,6 +2448,18 @@ ORDER BY id ASC;";
                 return;
             }
 
+            if (result.Data != null)
+            {
+                try
+                {
+                    var receiptLines = BuildSaleReceiptLines(result.Data);
+                    this.salesApplicationService.SaveReceiptText(result.Data.SaleId, string.Join(Environment.NewLine, receiptLines));
+                }
+                catch
+                {
+                }
+            }
+
             if (selectedPaymentMethod.Value == PaymentMethod.Efectivo)
             {
                 ShowCashChangeHelper(result.Data == null ? orderTotal : result.Data.Total);
@@ -2118,6 +2481,50 @@ ORDER BY id ASC;";
             SetCashierOrderUiEnabled(false);
             UpdateCurrentOrderLabel();
             UpdateCashierTotal();
+        }
+
+        private PaymentMethod? PromptPaymentMethodEdit(PaymentMethod currentMethod)
+        {
+            using (var dialog = new Form())
+            {
+                dialog.Text = "Editar método de pago";
+                dialog.StartPosition = FormStartPosition.CenterParent;
+                dialog.ClientSize = new Size(360, 190);
+                dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+                dialog.MaximizeBox = false;
+                dialog.MinimizeBox = false;
+
+                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(14) };
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+                var methodCombo = new ComboBox
+                {
+                    Dock = DockStyle.Fill,
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold)
+                };
+                methodCombo.DataSource = new[] { PaymentMethod.Efectivo, PaymentMethod.Tarjeta, PaymentMethod.Transferencia };
+                methodCombo.SelectedItem = currentMethod;
+
+                var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
+                var acceptButton = new Button { Text = "Guardar", Width = 100, Height = 32, DialogResult = DialogResult.OK };
+                var cancelButton = new Button { Text = "Cancelar", Width = 100, Height = 32, DialogResult = DialogResult.Cancel, Margin = new Padding(10, 3, 3, 3) };
+                buttons.Controls.Add(acceptButton);
+                buttons.Controls.Add(cancelButton);
+
+                layout.Controls.Add(new Label { Text = "Nuevo método de pago:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+                layout.Controls.Add(methodCombo, 0, 1);
+                layout.Controls.Add(buttons, 0, 2);
+                dialog.Controls.Add(layout);
+                dialog.AcceptButton = acceptButton;
+                dialog.CancelButton = cancelButton;
+
+                return dialog.ShowDialog(this) == DialogResult.OK && methodCombo.SelectedItem is PaymentMethod
+                    ? (PaymentMethod)methodCombo.SelectedItem
+                    : (PaymentMethod?)null;
+            }
         }
 
         private PaymentMethod? PromptPaymentMethodForCharge(PaymentMethod defaultMethod, decimal total)
@@ -2388,43 +2795,164 @@ ORDER BY id ASC;";
             {
                 dialog.Text = "Confirmar corte";
                 dialog.StartPosition = FormStartPosition.CenterParent;
-                dialog.ClientSize = new Size(390, 170);
+                dialog.ClientSize = new Size(420, 620);
                 dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
                 dialog.MaximizeBox = false;
                 dialog.MinimizeBox = false;
+                dialog.BackColor = Color.FromArgb(236, 241, 245);
 
-                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(12) };
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+                var darkText = Color.FromArgb(33, 37, 41);
 
-                var cashInput = new NumericUpDown
+                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(20) };
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F));
+
+                var cashValuePanel = new Panel
                 {
                     Dock = DockStyle.Fill,
-                    DecimalPlaces = 2,
-                    Maximum = 1000000m,
-                    Minimum = 0m,
-                    ThousandsSeparator = true,
-                    Value = expectedCash < 0m ? 0m : expectedCash
+                    BackColor = Color.White,
+                    BorderStyle = BorderStyle.FixedSingle,
+                    Margin = new Padding(0, 4, 0, 4)
+                };
+                var cashValueLabel = new Label
+                {
+                    Dock = DockStyle.Fill,
+                    Font = new Font("Segoe UI Semibold", 24F, FontStyle.Bold),
+                    ForeColor = darkText,
+                    TextAlign = ContentAlignment.MiddleRight,
+                    Padding = new Padding(0, 0, 12, 0)
+                };
+                cashValuePanel.Controls.Add(cashValueLabel);
+
+                var typedText = string.Empty;
+
+                Action refresh = delegate
+                {
+                    cashValueLabel.Text = typedText.Length == 0 ? string.Empty : "$" + typedText;
                 };
 
+                Action<string> appendChar = ch =>
+                {
+                    if (ch == "." && typedText.Contains("."))
+                    {
+                        return;
+                    }
+
+                    if (typedText.Length >= 12)
+                    {
+                        return;
+                    }
+
+                    typedText += ch;
+                    refresh();
+                };
+                Action backspace = delegate
+                {
+                    if (typedText.Length == 0)
+                    {
+                        return;
+                    }
+
+                    typedText = typedText.Substring(0, typedText.Length - 1);
+                    refresh();
+                };
+                Action clear = delegate
+                {
+                    typedText = string.Empty;
+                    refresh();
+                };
+
+                var keypadPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 4, Margin = new Padding(0, 6, 0, 6) };
+                for (var column = 0; column < 3; column++)
+                {
+                    keypadPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.34F));
+                }
+
+                for (var row = 0; row < 4; row++)
+                {
+                    keypadPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 25F));
+                }
+
+                var keypadFont = new Font("Segoe UI Semibold", 22F, FontStyle.Bold);
+
+                Func<string, Color, Color, Action, Button> makeKey = (text, backColor, foreColor, onClick) =>
+                {
+                    var key = new Button
+                    {
+                        Text = text,
+                        Dock = DockStyle.Fill,
+                        Margin = new Padding(6),
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = backColor,
+                        ForeColor = foreColor,
+                        Font = keypadFont
+                    };
+                    key.FlatAppearance.BorderColor = Color.FromArgb(208, 215, 222);
+                    key.Click += delegate { onClick(); };
+                    return key;
+                };
+
+                keypadPanel.Controls.Add(makeKey("7", Color.White, darkText, () => appendChar("7")), 0, 0);
+                keypadPanel.Controls.Add(makeKey("8", Color.White, darkText, () => appendChar("8")), 1, 0);
+                keypadPanel.Controls.Add(makeKey("9", Color.White, darkText, () => appendChar("9")), 2, 0);
+                keypadPanel.Controls.Add(makeKey("4", Color.White, darkText, () => appendChar("4")), 0, 1);
+                keypadPanel.Controls.Add(makeKey("5", Color.White, darkText, () => appendChar("5")), 1, 1);
+                keypadPanel.Controls.Add(makeKey("6", Color.White, darkText, () => appendChar("6")), 2, 1);
+                keypadPanel.Controls.Add(makeKey("1", Color.White, darkText, () => appendChar("1")), 0, 2);
+                keypadPanel.Controls.Add(makeKey("2", Color.White, darkText, () => appendChar("2")), 1, 2);
+                keypadPanel.Controls.Add(makeKey("3", Color.White, darkText, () => appendChar("3")), 2, 2);
+                keypadPanel.Controls.Add(makeKey("C", Color.FromArgb(185, 28, 28), Color.White, clear), 0, 3);
+                keypadPanel.Controls.Add(makeKey("0", Color.White, darkText, () => appendChar("0")), 1, 3);
+                keypadPanel.Controls.Add(makeKey("⌫", Color.FromArgb(69, 123, 157), Color.White, backspace), 2, 3);
+
                 var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
-                var confirmButton = new Button { Text = "Confirmar", Width = 100, Height = 30, DialogResult = DialogResult.OK };
-                var cancelButton = new Button { Text = "Cancelar", Width = 100, Height = 30, DialogResult = DialogResult.Cancel };
+                var confirmButton = new Button
+                {
+                    Text = "Confirmar",
+                    Width = 130,
+                    Height = 38,
+                    DialogResult = DialogResult.OK,
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.FromArgb(27, 67, 50),
+                    ForeColor = Color.White,
+                    Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold)
+                };
+                confirmButton.FlatAppearance.BorderSize = 0;
+                var cancelButton = new Button
+                {
+                    Text = "Cancelar",
+                    Width = 130,
+                    Height = 38,
+                    DialogResult = DialogResult.Cancel,
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.White,
+                    ForeColor = darkText,
+                    Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold)
+                };
+                cancelButton.FlatAppearance.BorderColor = Color.FromArgb(208, 215, 222);
                 buttons.Controls.Add(confirmButton);
                 buttons.Controls.Add(cancelButton);
 
-                layout.Controls.Add(new Label { Text = "Efectivo esperado: $" + expectedCash.ToString("N2"), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
-                layout.Controls.Add(new Label { Text = "Efectivo contado:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
-                layout.Controls.Add(cashInput, 0, 2);
-                layout.Controls.Add(buttons, 0, 3);
+                layout.Controls.Add(new Label { Text = "Efectivo esperado: $" + expectedCash.ToString("N2"), Dock = DockStyle.Fill, Font = new Font("Segoe UI Semibold", 12F, FontStyle.Bold), ForeColor = darkText, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+                layout.Controls.Add(new Label { Text = "Efectivo contado:", Dock = DockStyle.Fill, Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold), ForeColor = darkText, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
+                layout.Controls.Add(cashValuePanel, 0, 2);
+                layout.Controls.Add(keypadPanel, 0, 3);
+                layout.Controls.Add(buttons, 0, 4);
                 dialog.Controls.Add(layout);
                 dialog.AcceptButton = confirmButton;
                 dialog.CancelButton = cancelButton;
-                TouchInputSupport.EnableFor(dialog);
+                refresh();
 
-                return dialog.ShowDialog(this) == DialogResult.OK ? cashInput.Value : (decimal?)null;
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    return null;
+                }
+
+                decimal parsedValue;
+                return decimal.TryParse(typedText, NumberStyles.Number, CultureInfo.InvariantCulture, out parsedValue) ? parsedValue : 0m;
             }
         }
 
@@ -2439,15 +2967,24 @@ ORDER BY id ASC;";
 
             var orderKindText = GetCurrentTicketDisplayName();
             var printableNote = GetPrintableOrderNote(orderKindText);
+            if (hideProductPrice)
+            {
+                printableNote = StripPlatformAmounts(printableNote);
+                if (string.Equals(printableNote.Trim(), orderKindText.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    printableNote = string.Empty;
+                }
+            }
             var widthMm = this.startupState.TicketWidthMm <= 0 ? 80 : this.startupState.TicketWidthMm;
             var layout = string.IsNullOrWhiteSpace(this.startupState.TicketLayoutName) ? "Clásico compacto" : this.startupState.TicketLayoutName;
             var headerText = BuildTicketHeaderText();
 
             var total = GetCurrentOrderTotalForCharge();
+            var folio = GetNextPrecheckFolio().ToString(CultureInfo.InvariantCulture);
             var lines = TicketFormatter.FormatReceipt(
                 this.startupState.BusinessName ?? "MrAlbertoCompany",
                 this.startupState.BusinessSlogan,
-                "PRE-CUENTA",
+                folio,
                 DateTime.Now.ToString("dd/MM/yyyy HH:mm"),
                 this.authenticatedUser.DisplayName,
                 orderKindText,
@@ -2462,7 +2999,8 @@ ORDER BY id ASC;";
                 this.startupState.TicketSystemFooterText,
                 this.startupState.TicketHorizontalOffset,
                 this.startupState.TicketVerticalOffset,
-                this.startupState.TicketCharactersPerLine);
+                this.startupState.TicketCharactersPerLine,
+                hideProductPrice);
 
             this.lastReceiptPrinterName = this.startupState.ActivePrinterName;
             this.lastReceiptTitle = "Pre-cuenta";
@@ -2488,7 +3026,7 @@ ORDER BY id ASC;";
             });
         }
 
-        private void TryPrintCashierReceipt(CreateSaleResult sale)
+        private List<string> BuildSaleReceiptLines(CreateSaleResult sale)
         {
             var hideProductPrice = IsCurrentDigitalPlatformOrder();
             var formattedItems = this.cashierCartLines.Select(item => (
@@ -2499,11 +3037,19 @@ ORDER BY id ASC;";
 
             var orderKindText = GetCurrentTicketDisplayName();
             var printableNote = GetPrintableOrderNote(orderKindText);
+            if (hideProductPrice)
+            {
+                printableNote = StripPlatformAmounts(printableNote);
+                if (string.Equals(printableNote.Trim(), orderKindText.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    printableNote = string.Empty;
+                }
+            }
             var widthMm = this.startupState.TicketWidthMm <= 0 ? 80 : this.startupState.TicketWidthMm;
             var layout = string.IsNullOrWhiteSpace(this.startupState.TicketLayoutName) ? "Clásico compacto" : this.startupState.TicketLayoutName;
             var headerText = BuildTicketHeaderText();
 
-            var lines = TicketFormatter.FormatReceipt(
+            return TicketFormatter.FormatReceipt(
                 this.startupState.BusinessName ?? "MrAlbertoCompany",
                 this.startupState.BusinessSlogan,
                 sale.Folio,
@@ -2521,7 +3067,13 @@ ORDER BY id ASC;";
                 this.startupState.TicketSystemFooterText,
                 this.startupState.TicketHorizontalOffset,
                 this.startupState.TicketVerticalOffset,
-                this.startupState.TicketCharactersPerLine);
+                this.startupState.TicketCharactersPerLine,
+                hideProductPrice);
+        }
+
+        private void TryPrintCashierReceipt(CreateSaleResult sale)
+        {
+            var lines = BuildSaleReceiptLines(sale);
 
             this.lastReceiptPrinterName = this.startupState.ActivePrinterName;
             this.lastReceiptTitle = "Ticket de venta";
@@ -2757,7 +3309,8 @@ ORDER BY id ASC;";
 
         private int GetNextTakeAwayNumber()
         {
-            var usedNumbers = new HashSet<int>();
+            const string prefix = "Para llevar #";
+            var pendingNumbers = new System.Collections.Generic.HashSet<int>();
             foreach (var ticket in this.pendingTickets)
             {
                 if (ticket == null || ticket.OrderKind != OrderKind.ParaLlevar)
@@ -2765,43 +3318,40 @@ ORDER BY id ASC;";
                     continue;
                 }
 
-                var number = TryExtractTakeAwayNumber(ticket.Name);
-                if (number.HasValue && number.Value > 0)
+                var n = ticket.Name ?? string.Empty;
+                if (n.Length <= prefix.Length || !n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                 {
-                    usedNumbers.Add(number.Value);
+                    continue;
+                }
+
+                int parsed;
+                if (int.TryParse(n.Substring(prefix.Length), NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed))
+                {
+                    pendingNumbers.Add(parsed);
                 }
             }
 
-            var candidate = 1;
-            while (usedNumbers.Contains(candidate))
+            var soldCount = this.cashShiftApplicationService.CountParaLlevarSalesInActiveShift(this.startupState.StationCode);
+            var next = 1;
+            while (next <= soldCount || pendingNumbers.Contains(next))
             {
-                candidate += 1;
+                next++;
             }
 
-            this.nextTakeAwayNumber = candidate;
-            return candidate;
+            return next;
         }
 
-        private static int? TryExtractTakeAwayNumber(string value)
+        private static int ExtractTakeAwayNumberFromName(string name)
         {
-            if (string.IsNullOrWhiteSpace(value))
+            const string prefix = "Para llevar #";
+            if (string.IsNullOrEmpty(name) || name.Length <= prefix.Length
+                || !name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             {
-                return null;
+                return 0;
             }
 
-            var text = value.Trim();
-            if (!text.StartsWith("Para llevar #", StringComparison.OrdinalIgnoreCase))
-            {
-                return null;
-            }
-
-            var numberText = text.Substring("Para llevar #".Length).Trim();
-            if (int.TryParse(numberText, out var number) && number > 0)
-            {
-                return number;
-            }
-
-            return null;
+            int parsed;
+            return int.TryParse(name.Substring(prefix.Length), NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed) ? parsed : 0;
         }
 
         private string PromptPendingTicketName()
@@ -3102,7 +3652,7 @@ ORDER BY id ASC;";
             {
                 dialog.Text = "Para llevar";
                 dialog.StartPosition = FormStartPosition.CenterParent;
-                dialog.ClientSize = new Size(420, 160);
+                dialog.ClientSize = new Size(440, 180);
                 dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
                 dialog.MaximizeBox = false;
                 dialog.MinimizeBox = false;
@@ -3111,11 +3661,11 @@ ORDER BY id ASC;";
                 layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
                 layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
                 layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
                 var input = new TextBox { Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle };
                 var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
-                var nextButton = new Button { Text = "Siguiente", Width = 100, Height = 30, DialogResult = DialogResult.OK };
-                var cancelButton = new Button { Text = "Cancelar", Width = 100, Height = 30, DialogResult = DialogResult.Cancel };
+                var nextButton = new Button { Text = "Siguiente", Width = 120, Height = 38, DialogResult = DialogResult.OK };
+                var cancelButton = new Button { Text = "Cancelar", Width = 120, Height = 38, DialogResult = DialogResult.Cancel, Margin = new Padding(10, 3, 3, 3) };
                 buttons.Controls.Add(nextButton);
                 buttons.Controls.Add(cancelButton);
 
@@ -3124,6 +3674,9 @@ ORDER BY id ASC;";
                 layout.Controls.Add(new Label { Text = string.Empty, Dock = DockStyle.Fill }, 0, 2);
                 layout.Controls.Add(buttons, 0, 3);
                 dialog.Controls.Add(layout);
+                dialog.AcceptButton = nextButton;
+                dialog.CancelButton = cancelButton;
+                TouchInputSupport.EnableFor(dialog);
 
                 var result = dialog.ShowDialog(this);
                 if (result == DialogResult.Cancel)
@@ -3150,7 +3703,7 @@ ORDER BY id ASC;";
             {
                 dialog.Text = "Plataforma digital";
                 dialog.StartPosition = FormStartPosition.CenterParent;
-                dialog.ClientSize = new Size(640, 470);
+                dialog.ClientSize = new Size(640, 660);
                 dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
                 dialog.MaximizeBox = false;
                 dialog.MinimizeBox = false;
@@ -3163,18 +3716,12 @@ ORDER BY id ASC;";
                     Padding = new Padding(18)
                 };
 
-                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 12 };
+                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6 };
                 layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
                 layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22F));
                 layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
                 layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 12F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 12F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F));
-                layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 444F));
                 layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46F));
 
                 var platformCombo = new ComboBox
@@ -3194,17 +3741,16 @@ ORDER BY id ASC;";
                     TextAlign = ContentAlignment.MiddleLeft,
                     Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold)
                 };
-                var firstInput = new NumericUpDown
+                var firstValuePanel = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+                var firstValueLabel = new Label
                 {
                     Dock = DockStyle.Fill,
-                    DecimalPlaces = 2,
-                    Maximum = 1000000m,
-                    Minimum = 0m,
-                    ThousandsSeparator = true,
                     Font = new Font("Segoe UI", 14F, FontStyle.Bold),
-                    Height = 44,
-                    TextAlign = HorizontalAlignment.Right
+                    ForeColor = Color.FromArgb(15, 23, 42),
+                    TextAlign = ContentAlignment.MiddleRight,
+                    Padding = new Padding(0, 0, 10, 0)
                 };
+                firstValuePanel.Controls.Add(firstValueLabel);
 
                 var secondInputLabel = new Label
                 {
@@ -3213,17 +3759,195 @@ ORDER BY id ASC;";
                     TextAlign = ContentAlignment.MiddleLeft,
                     Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold)
                 };
-                var secondInput = new NumericUpDown
+                var secondValuePanel = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+                var secondValueLabel = new Label
                 {
                     Dock = DockStyle.Fill,
-                    DecimalPlaces = 2,
-                    Maximum = 1000000m,
-                    Minimum = 0m,
-                    ThousandsSeparator = true,
                     Font = new Font("Segoe UI", 14F, FontStyle.Bold),
-                    Height = 44,
-                    TextAlign = HorizontalAlignment.Right
+                    ForeColor = Color.FromArgb(15, 23, 42),
+                    TextAlign = ContentAlignment.MiddleRight,
+                    Padding = new Padding(0, 0, 10, 0)
                 };
+                secondValuePanel.Controls.Add(secondValueLabel);
+
+                var activeFieldColor = Color.FromArgb(219, 234, 254);
+                var firstTypedText = string.Empty;
+                var secondTypedText = string.Empty;
+                string activeField = null;
+
+                var keypadStatusLabel = new Label
+                {
+                    Dock = DockStyle.Fill,
+                    Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold),
+                    ForeColor = Color.FromArgb(71, 85, 105),
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    Text = "Toca un campo de monto para capturarlo."
+                };
+
+                var keypadGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 4, Visible = false };
+                for (var column = 0; column < 4; column++)
+                {
+                    keypadGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
+                }
+
+                for (var row = 0; row < 4; row++)
+                {
+                    keypadGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 25F));
+                }
+
+                Action refreshAmountDisplays = delegate
+                {
+                    firstValueLabel.Text = firstTypedText.Length == 0 ? string.Empty : "$" + firstTypedText;
+                    secondValueLabel.Text = secondTypedText.Length == 0 ? string.Empty : "$" + secondTypedText;
+                };
+
+                Action<string> setActiveField = name =>
+                {
+                    activeField = name;
+                    firstValuePanel.BackColor = name == "first" ? activeFieldColor : Color.White;
+                    secondValuePanel.BackColor = name == "second" ? activeFieldColor : Color.White;
+                    keypadGrid.Visible = true;
+                    keypadStatusLabel.Text = "Capturando: " + (name == "first" ? firstInputLabel.Text : secondInputLabel.Text).TrimEnd(':');
+                };
+
+                EventHandler selectFirstField = delegate { setActiveField("first"); };
+                EventHandler selectSecondField = delegate { setActiveField("second"); };
+                firstValuePanel.Click += selectFirstField;
+                firstValueLabel.Click += selectFirstField;
+                secondValuePanel.Click += selectSecondField;
+                secondValueLabel.Click += selectSecondField;
+
+                Func<string, decimal> parseTypedAmount = text =>
+                {
+                    if (string.IsNullOrEmpty(text))
+                    {
+                        return 0m;
+                    }
+
+                    var normalized = text.StartsWith(".", StringComparison.Ordinal) ? "0" + text : text;
+                    normalized = normalized.TrimEnd('.');
+                    decimal value;
+                    return decimal.TryParse(normalized, NumberStyles.Number, CultureInfo.InvariantCulture, out value) ? value : 0m;
+                };
+
+                Action<string> appendChar = ch =>
+                {
+                    if (activeField == "first")
+                    {
+                        if (ch == "." && firstTypedText.Contains(".")) return;
+                        firstTypedText += ch;
+                    }
+                    else if (activeField == "second")
+                    {
+                        if (ch == "." && secondTypedText.Contains(".")) return;
+                        secondTypedText += ch;
+                    }
+
+                    refreshAmountDisplays();
+                };
+
+                Action backspaceChar = delegate
+                {
+                    if (activeField == "first" && firstTypedText.Length > 0)
+                    {
+                        firstTypedText = firstTypedText.Substring(0, firstTypedText.Length - 1);
+                    }
+                    else if (activeField == "second" && secondTypedText.Length > 0)
+                    {
+                        secondTypedText = secondTypedText.Substring(0, secondTypedText.Length - 1);
+                    }
+
+                    refreshAmountDisplays();
+                };
+
+                Action clearTyped = delegate
+                {
+                    if (activeField == "first")
+                    {
+                        firstTypedText = string.Empty;
+                    }
+                    else if (activeField == "second")
+                    {
+                        secondTypedText = string.Empty;
+                    }
+
+                    refreshAmountDisplays();
+                };
+
+                dialog.KeyPreview = true;
+                dialog.KeyPress += delegate (object sender, KeyPressEventArgs e)
+                {
+                    if (activeField == null)
+                    {
+                        return;
+                    }
+
+                    if (char.IsDigit(e.KeyChar) || e.KeyChar == '.')
+                    {
+                        appendChar(e.KeyChar.ToString());
+                        e.Handled = true;
+                    }
+                };
+                dialog.KeyDown += delegate (object sender, KeyEventArgs e)
+                {
+                    if (activeField == null)
+                    {
+                        return;
+                    }
+
+                    if (e.KeyCode == Keys.Back)
+                    {
+                        backspaceChar();
+                        e.Handled = true;
+                    }
+                    else if (e.KeyCode == Keys.Delete)
+                    {
+                        clearTyped();
+                        e.Handled = true;
+                    }
+                };
+
+                var keypadDarkText = Color.FromArgb(33, 37, 41);
+                var keypadFont = new Font("Segoe UI Semibold", 18F, FontStyle.Bold);
+
+                Func<string, Color, Color, Action, Button> makeKey = (text, backColor, foreColor, onClick) =>
+                {
+                    var key = new Button
+                    {
+                        Text = text,
+                        Dock = DockStyle.Fill,
+                        Margin = new Padding(5),
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = backColor,
+                        ForeColor = foreColor,
+                        Font = keypadFont
+                    };
+                    key.FlatAppearance.BorderColor = Color.FromArgb(208, 215, 222);
+                    key.Click += delegate { onClick(); };
+                    return key;
+                };
+
+                keypadGrid.Controls.Add(makeKey("7", Color.White, keypadDarkText, () => appendChar("7")), 0, 0);
+                keypadGrid.Controls.Add(makeKey("8", Color.White, keypadDarkText, () => appendChar("8")), 1, 0);
+                keypadGrid.Controls.Add(makeKey("9", Color.White, keypadDarkText, () => appendChar("9")), 2, 0);
+                keypadGrid.Controls.Add(makeKey("⌫", Color.FromArgb(69, 123, 157), Color.White, backspaceChar), 3, 0);
+                keypadGrid.Controls.Add(makeKey("4", Color.White, keypadDarkText, () => appendChar("4")), 0, 1);
+                keypadGrid.Controls.Add(makeKey("5", Color.White, keypadDarkText, () => appendChar("5")), 1, 1);
+                keypadGrid.Controls.Add(makeKey("6", Color.White, keypadDarkText, () => appendChar("6")), 2, 1);
+                keypadGrid.Controls.Add(makeKey("C", Color.FromArgb(185, 28, 28), Color.White, clearTyped), 3, 1);
+                keypadGrid.Controls.Add(makeKey("1", Color.White, keypadDarkText, () => appendChar("1")), 0, 2);
+                keypadGrid.Controls.Add(makeKey("2", Color.White, keypadDarkText, () => appendChar("2")), 1, 2);
+                keypadGrid.Controls.Add(makeKey("3", Color.White, keypadDarkText, () => appendChar("3")), 2, 2);
+                keypadGrid.Controls.Add(makeKey(".", Color.White, keypadDarkText, () => appendChar(".")), 3, 2);
+                var zeroKey = makeKey("0", Color.White, keypadDarkText, () => appendChar("0"));
+                keypadGrid.Controls.Add(zeroKey, 0, 3);
+                keypadGrid.SetColumnSpan(zeroKey, 4);
+
+                var keypadContainer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+                keypadContainer.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
+                keypadContainer.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+                keypadContainer.Controls.Add(keypadStatusLabel, 0, 0);
+                keypadContainer.Controls.Add(keypadGrid, 0, 1);
 
                 Action refreshFieldLabels = delegate
                 {
@@ -3238,8 +3962,8 @@ ORDER BY id ASC;";
 
                     if (mode == "didi")
                     {
-                        firstInputLabel.Text = "Precio con descuento:";
-                        secondInputLabel.Text = "Ingresos estimados:";
+                        firstInputLabel.Text = "Ganancias totales después del descuento:";
+                        secondInputLabel.Text = "Ganancias por pedido:";
                         return;
                     }
 
@@ -3247,16 +3971,54 @@ ORDER BY id ASC;";
                     secondInputLabel.Text = "Ingreso estimado:";
                 };
 
+                var amountFieldsPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8 };
+                amountFieldsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 12F));
+                amountFieldsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+                amountFieldsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F));
+                amountFieldsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 12F));
+                amountFieldsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+                amountFieldsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F));
+                amountFieldsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+                amountFieldsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 230F));
+                amountFieldsPanel.Controls.Add(new Label { Text = string.Empty, Dock = DockStyle.Fill }, 0, 0);
+                amountFieldsPanel.Controls.Add(firstInputLabel, 0, 1);
+                amountFieldsPanel.Controls.Add(firstValuePanel, 0, 2);
+                amountFieldsPanel.Controls.Add(new Label { Text = string.Empty, Dock = DockStyle.Fill }, 0, 3);
+                amountFieldsPanel.Controls.Add(secondInputLabel, 0, 4);
+                amountFieldsPanel.Controls.Add(secondValuePanel, 0, 5);
+                amountFieldsPanel.Controls.Add(new Label { Text = "El primer monto se usa como precio fijo para todos los productos de esta orden.", Dock = DockStyle.Fill, ForeColor = Color.DimGray, TextAlign = ContentAlignment.MiddleLeft }, 0, 6);
+                amountFieldsPanel.Controls.Add(keypadContainer, 0, 7);
+                amountFieldsPanel.Visible = false;
+
+                var amountPlaceholderLabel = new Label
+                {
+                    Dock = DockStyle.Fill,
+                    Text = "Selecciona una plataforma para capturar los montos.",
+                    ForeColor = Color.DimGray,
+                    Font = new Font("Segoe UI Semibold", 11.5F, FontStyle.Bold),
+                    TextAlign = ContentAlignment.MiddleCenter
+                };
+
+                var amountHost = new Panel { Dock = DockStyle.Fill };
+                amountHost.Controls.Add(amountPlaceholderLabel);
+                amountHost.Controls.Add(amountFieldsPanel);
+
                 platformCombo.SelectedIndexChanged += delegate
                 {
+                    var hasSelection = platformCombo.SelectedItem is DigitalPlatformConfigurationView;
+                    amountFieldsPanel.Visible = hasSelection;
+                    amountPlaceholderLabel.Visible = !hasSelection;
+                    if (!hasSelection)
+                    {
+                        return;
+                    }
+
                     refreshFieldLabels();
-                    firstInput.Value = 0m;
-                    secondInput.Value = 0m;
-                    firstInput.Focus();
-                    firstInput.Select(0, firstInput.Text.Length);
-                    secondInput.Select(0, secondInput.Text.Length);
+                    firstTypedText = string.Empty;
+                    secondTypedText = string.Empty;
+                    refreshAmountDisplays();
                 };
-                refreshFieldLabels();
+                platformCombo.SelectedIndex = -1;
 
                 var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
                 var acceptButton = new Button
@@ -3264,13 +4026,37 @@ ORDER BY id ASC;";
                     Text = "Aceptar",
                     Width = 130,
                     Height = 38,
-                    DialogResult = DialogResult.OK,
                     BackColor = Color.FromArgb(27, 67, 50),
                     ForeColor = Color.White,
                     FlatStyle = FlatStyle.Flat,
                     Font = new Font("Segoe UI Semibold", 10.5F, FontStyle.Bold)
                 };
                 acceptButton.FlatAppearance.BorderSize = 0;
+                acceptButton.Click += delegate
+                {
+                    if (!(platformCombo.SelectedItem is DigitalPlatformConfigurationView))
+                    {
+                        MessageBox.Show(
+                            "Selecciona una plataforma antes de continuar.",
+                            "Datos incompletos",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                        return;
+                    }
+
+                    if (firstTypedText.Length == 0 || secondTypedText.Length == 0)
+                    {
+                        MessageBox.Show(
+                            "Captura los dos montos de la plataforma antes de continuar.",
+                            "Datos incompletos",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                        return;
+                    }
+
+                    dialog.DialogResult = DialogResult.OK;
+                    dialog.Close();
+                };
                 var cancelButton = new Button
                 {
                     Text = "Cancelar",
@@ -3303,22 +4089,10 @@ ORDER BY id ASC;";
                 }, 0, 1);
                 layout.Controls.Add(new Label { Text = "Plataforma:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 2);
                 layout.Controls.Add(platformCombo, 0, 3);
-                layout.Controls.Add(new Label { Text = string.Empty, Dock = DockStyle.Fill }, 0, 4);
-                layout.Controls.Add(firstInputLabel, 0, 5);
-                layout.Controls.Add(firstInput, 0, 6);
-                layout.Controls.Add(new Label { Text = string.Empty, Dock = DockStyle.Fill }, 0, 7);
-                layout.Controls.Add(secondInputLabel, 0, 8);
-                layout.Controls.Add(secondInput, 0, 9);
-                layout.Controls.Add(new Label { Text = "El primer monto se usa como precio fijo para todos los productos de esta orden.", Dock = DockStyle.Fill, ForeColor = Color.DimGray, TextAlign = ContentAlignment.MiddleLeft }, 0, 10);
-                layout.Controls.Add(buttons, 0, 11);
+                layout.Controls.Add(amountHost, 0, 4);
+                layout.Controls.Add(buttons, 0, 5);
                 card.Controls.Add(layout);
                 dialog.Controls.Add(card);
-                dialog.Shown += delegate
-                {
-                    firstInput.Focus();
-                    firstInput.Select(0, firstInput.Text.Length);
-                    secondInput.Select(0, secondInput.Text.Length);
-                };
 
                 var result = dialog.ShowDialog(this);
                 if (result != DialogResult.OK)
@@ -3333,8 +4107,8 @@ ORDER BY id ASC;";
                 }
 
                 var modeValue = NormalizePricingMode(selected.PricingMode);
-                var unitPrice = firstInput.Value;
-                var auxAmount = secondInput.Value;
+                var unitPrice = parseTypedAmount(firstTypedText);
+                var auxAmount = parseTypedAmount(secondTypedText);
                 var note = BuildDigitalPlatformNote(selected.Name, modeValue, unitPrice, auxAmount);
 
                 return new DigitalPlatformOrderSelection
@@ -3371,8 +4145,8 @@ ORDER BY id ASC;";
             if (pricingMode == "didi")
             {
                 return "Plataforma: " + safeName
-                    + " | Precio con descuento: $" + mainAmount.ToString("N2", CultureInfo.InvariantCulture)
-                    + " | Ingresos estimados: $" + secondaryAmount.ToString("N2", CultureInfo.InvariantCulture);
+                    + " | Ganancias totales después del descuento: $" + mainAmount.ToString("N2", CultureInfo.InvariantCulture)
+                    + " | Ganancias por pedido: $" + secondaryAmount.ToString("N2", CultureInfo.InvariantCulture);
             }
 
             return "Plataforma: " + safeName
@@ -3541,6 +4315,11 @@ ORDER BY id ASC;";
             MessageBox.Show(result.Message, "Reimprimir ticket", MessageBoxButtons.OK, result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
         }
 
+        private int GetNextPrecheckFolio()
+        {
+            return this.counterRepository.GetNextValue("precheck_folio");
+        }
+
         private string GetPendingTicketsStorageFilePath()
         {
             var paths = StationPathsFactory.CreateDefault();
@@ -3568,7 +4347,6 @@ ORDER BY id ASC;";
                         return;
                     }
 
-                    this.nextTakeAwayNumber = model.NextTakeAwayNumber <= 0 ? 1 : model.NextTakeAwayNumber;
                     var items = model.Tickets ?? new List<PendingTicketStorageItem>();
                     foreach (var item in items)
                     {
@@ -3611,7 +4389,6 @@ ORDER BY id ASC;";
             {
                 var model = new PendingTicketsStorageModel
                 {
-                    NextTakeAwayNumber = this.nextTakeAwayNumber <= 0 ? 1 : this.nextTakeAwayNumber,
                     Tickets = this.pendingTickets.Select(item => new PendingTicketStorageItem
                     {
                         Name = item.Name,
@@ -3669,6 +4446,17 @@ ORDER BY id ASC;";
             return this.cashierOrderKindComboBox != null && this.cashierOrderKindComboBox.SelectedItem != null
                 ? this.cashierOrderKindComboBox.SelectedItem.ToString()
                 : "Venta";
+        }
+
+        private static string StripPlatformAmounts(string note)
+        {
+            if (string.IsNullOrWhiteSpace(note))
+            {
+                return note;
+            }
+
+            var separatorIndex = note.IndexOf(" | ", StringComparison.Ordinal);
+            return separatorIndex >= 0 ? note.Substring(0, separatorIndex) : note;
         }
 
         private string GetPrintableOrderNote(string ticketName)
@@ -3819,9 +4607,6 @@ ORDER BY id ASC;";
         private sealed class PendingTicketsStorageModel
         {
             [DataMember]
-            public int NextTakeAwayNumber { get; set; }
-
-            [DataMember]
             public List<PendingTicketStorageItem> Tickets { get; set; }
         }
 
@@ -3889,6 +4674,7 @@ ORDER BY id ASC;";
             public PaymentMethod PaymentMethod { get; set; }
             public decimal EstimatedCostTotal { get; set; }
             public decimal EstimatedProfitTotal { get; set; }
+            public string ReceiptText { get; set; } = string.Empty;
             public IList<SoldTicketLine> Items { get; private set; } = new List<SoldTicketLine>();
 
             public override string ToString()

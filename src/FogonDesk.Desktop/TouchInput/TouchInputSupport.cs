@@ -163,14 +163,16 @@ namespace FogonDesk.Desktop.TouchInput
 
         private static void TextInputEnter(object sender, EventArgs e)
         {
-            PreserveTextSelection((TextBox)sender);
-            TouchKeyboardLauncher.Show();
+            var textBox = (TextBox)sender;
+            PreserveTextSelection(textBox);
+            TouchKeyboardLauncher.Show(textBox, textBox.FindForm());
         }
 
         private static void TextInputClick(object sender, EventArgs e)
         {
-            PreserveTextSelection((TextBox)sender);
-            TouchKeyboardLauncher.Show();
+            var textBox = (TextBox)sender;
+            PreserveTextSelection(textBox);
+            TouchKeyboardLauncher.Show(textBox, textBox.FindForm());
         }
 
         private static void BeginPreserveCaret(NumericUpDown input)

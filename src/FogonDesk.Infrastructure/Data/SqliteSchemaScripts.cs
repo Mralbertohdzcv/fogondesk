@@ -527,6 +527,21 @@ INSERT OR IGNORE INTO dining_tables (code, name, seats, is_active) VALUES ('M05'
 UPDATE dining_tables
 SET is_active = CASE WHEN code IN ('M01', 'M02', 'M03', 'M04', 'M05') THEN 1 ELSE 0 END;
 "),
+            new SqliteMigrationScript(
+                "011_app_counters",
+                @"
+CREATE TABLE IF NOT EXISTS app_counters (
+    name TEXT PRIMARY KEY,
+    next_value INTEGER NOT NULL DEFAULT 1
+);
+
+INSERT OR IGNORE INTO app_counters (name, next_value) VALUES ('precheck_folio', 1);
+"),
+            new SqliteMigrationScript(
+                "012_sales_receipt_text",
+                @"
+ALTER TABLE sales ADD COLUMN receipt_text TEXT NOT NULL DEFAULT '';
+"),
         };
     }
 }
